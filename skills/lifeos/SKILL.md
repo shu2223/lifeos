@@ -1,0 +1,66 @@
+---
+name: lifeos
+description: Record and look up the user's personal life data in lifeos, their self-hosted records service — meals and calories, drinks and water, workouts, weight and body measurements, sleep, mood, diary, symptoms, medication, spending, Apple Health and Apple Fitness data. Use whenever the user mentions eating or drinking something ("我今天吃了…", "喝了杯咖啡"), exercising, weighing themselves, how they slept or feel, or asks about their own intake, activity, health trends or habits.
+---
+
+# lifeos: the user's personal records
+
+lifeos is the user's own record store, running on their home server. When they tell you about
+their day, write it there. When they ask about themselves, read it from there instead of
+guessing.
+
+## Connecting
+
+- **Base URL**: `$LIFEOS_URL`, for example `https://yishuapp.com/life`. On the server itself
+  it is `http://127.0.0.1:8773`.
+- **Token**: `$LIFEOS_TOKEN`. Every agent has its own token, which the owner creates with
+  `lifeos token create <agent-name>`.
+- If either is missing, ask the user once.
+- Never print the token, repeat it, or write it into a record.
+
+Every call sends `Authorization: Bearer $LIFEOS_TOKEN`. Request bodies are JSON. Read the full
+manual once per session before your first write: `GET $LIFEOS_URL/api/v1/manual`. It covers
+every endpoint, schema and recipe.
+
+```bash
+H="Authorization: Bearer $LIFEOS_TOKEN"
+curl -s "$LIFEOS_URL/api/v1/context" -H "$H"
+curl -s -X POST "$LIFEOS_URL/api/v1/records" -H "$H" -H "Content-Type: application/json" \
+  --data-binary @- <<'JSON'
+{"category": "meal", "start": "12:30", "data": {"items": [
+  {"name": "牛肉面", "amount": 1, "unit": "碗", "grams": 550, "kcal": 620, "protein_g": 30,
+   "fat_g": 16, "carbs_g": 88, "estimated": true, "confidence": "medium"}]},
+ "note": "我中午吃了一碗牛肉面"}
+JSON
+```
+
+On the server itself, `lifeos api GET context` and `lifeos api POST records <<'JSON' …` do the
+same thing using the server's own token.
+
+| Call | Use |
+|---|---|
+| `GET /api/v1/context` | start here: current time, timezone, profile and goals, today so far, frequent foods |
+| `GET /api/v1/foods?q=牛肉面` | the user's food library |
+| `POST /api/v1/records` | a meal, workout, mood, diary entry, symptom, medication or expense |
+| `PATCH /api/v1/records/{id}` | fix a record; `data` is merged and arrays are replaced |
+| `DELETE /api/v1/records/{id}` | remove a record (it can be restored) |
+| `POST /api/v1/samples` | numbers such as weight or water: `{"samples": [{"metric": "body_mass", "value": 61.8}]}` |
+| `GET /api/v1/summary/day` | today's intake against goals, plus steps, sleep and workouts |
+
+## How to behave
+
+- **One message should be enough.** "我中午吃了一碗牛肉面加个煎蛋" becomes a complete `meal`
+  record in a single turn. Estimate grams, kcal, protein, fat and carbs for each item, and
+  mark them `estimated` with a `confidence`. Ask a question only if any guess would be wildly
+  off.
+- Take the date and time from `GET /api/v1/context`, not from your own sense of the date.
+  Times without an offset are read in the user's timezone.
+- Check `frequent_foods` and `GET /api/v1/foods?q=` first, so foods the user eats often get
+  consistent numbers. When the user gives numbers from a label, save the food with
+  `POST /api/v1/foods`.
+- Fix mistakes with `PATCH`. Remove duplicates with `DELETE`. Never write a second record to
+  fix the first.
+- Workouts, steps, sleep and heart rate from Apple Watch arrive automatically, so don't enter
+  them again. Add what the user tells you to the existing record instead.
+- After writing, confirm in one short line in the user's language, with the key numbers and
+  today's running total. For example: 记好了：午餐 牛肉面+煎蛋 ≈ 710 kcal，今天累计 1,240 / 2,000 kcal.

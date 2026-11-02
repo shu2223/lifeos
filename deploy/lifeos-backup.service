@@ -1,0 +1,13 @@
+[Unit]
+Description=lifeos database snapshot (keeps the last 30)
+
+[Service]
+Type=oneshot
+Environment=LIFEOS_HOME=/var/lib/lifeos
+ExecStart=/opt/lifeos/.venv/bin/lifeos backup --keep 30
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/lifeos
+ProtectHome=true
+PrivateTmp=true

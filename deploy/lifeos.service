@@ -1,0 +1,27 @@
+[Unit]
+Description=lifeos personal records API (loopback :8773; public at yishuapp.com/life/)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=LIFEOS_HOME=/var/lib/lifeos
+# Public at https://yishuapp.com/life/ through the Cloudflare Tunnel; locally also at /.
+Environment=LIFEOS_PREFIX=/life
+# Multipart uploads spool to TMPDIR; keep big Health exports on disk, not in RAM.
+Environment=TMPDIR=/var/lib/lifeos/tmp
+StateDirectory=lifeos
+StateDirectoryMode=0700
+ExecStartPre=/usr/bin/mkdir -p /var/lib/lifeos/tmp
+ExecStart=/opt/lifeos/.venv/bin/lifeos serve --host 127.0.0.1 --port 8773
+Restart=on-failure
+RestartSec=5
+Nice=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+InaccessiblePaths=-/opt/knowledge -/opt/paperless -/opt/classroomautowork -/etc/knowledge-api
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

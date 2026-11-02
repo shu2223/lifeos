@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly lifeos database snapshot
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Tokyo
+Persistent=true
+
+[Install]
+WantedBy=timers.target
