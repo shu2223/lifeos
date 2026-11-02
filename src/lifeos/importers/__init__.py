@@ -33,13 +33,34 @@ def workout_key(start_ts: float) -> str:
     return "workout:" + datetime.fromtimestamp(start_ts, UTC).strftime("%Y-%m-%dT%H:%MZ")
 
 
+# Health Auto Export names workouts in the phone's language ("室内 步行"). Longer words first,
+# so 功能性力量训练 is not taken for plain 力量训练.
+LOCALIZED_ACTIVITIES = (
+    ("高强度间歇", "high_intensity_interval_training"), ("功能性力量", "functional_strength_training"),
+    ("传统力量", "traditional_strength_training"), ("力量训练", "traditional_strength_training"),
+    ("核心训练", "core_training"), ("混合有氧", "mixed_cardio"), ("整理放松", "cooldown"),
+    ("椭圆机", "elliptical"), ("划船", "rowing"), ("爬楼", "stair_climbing"),
+    ("楼梯", "stair_climbing"), ("普拉提", "pilates"), ("瑜伽", "yoga"), ("舞蹈", "dance"),
+    ("太极", "tai_chi"), ("柔韧", "flexibility"), ("徒步", "hiking"), ("远足", "hiking"),
+    ("步行", "walking"), ("跑步", "running"), ("骑行", "cycling"), ("骑车", "cycling"),
+    ("自行车", "cycling"), ("游泳", "swimming"), ("羽毛球", "badminton"),
+    ("乒乓球", "table_tennis"), ("篮球", "basketball"), ("足球", "soccer"), ("网球", "tennis"),
+    ("排球", "volleyball"), ("滑雪", "skiing"), ("攀岩", "climbing"), ("拳击", "boxing"),
+    ("跳绳", "jump_rope"), ("ウォーキング", "walking"), ("ランニング", "running"),
+    ("サイクリング", "cycling"), ("スイミング", "swimming"), ("水泳", "swimming"),
+    ("ハイキング", "hiking"), ("ヨガ", "yoga"),
+)
+
+
 def activity_type(name: str) -> str:
     from ..metrics import snake
     s = snake(name)
     for prefix in ("outdoor_", "indoor_", "pool_", "open_water_"):
         s = s.removeprefix(prefix)
-    return {"walk": "walking", "run": "running", "cycle": "cycling", "swim": "swimming",
-            "hike": "hiking", "hiit": "high_intensity_interval_training"}.get(s, s)
+    if s:
+        return {"walk": "walking", "run": "running", "cycle": "cycling", "swim": "swimming",
+                "hike": "hiking", "hiit": "high_intensity_interval_training"}.get(s, s)
+    return next((kind for word, kind in LOCALIZED_ACTIVITIES if word in name), "other")
 
 
 def gpx(name: str, points: list[tuple]) -> bytes:

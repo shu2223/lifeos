@@ -340,3 +340,42 @@ def test_migrates_v1_database(tmp_path):
     migrate(conn)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     conn.execute("SELECT * FROM record_series").fetchall()
+
+
+def test_localized_payload_like_a_chinese_iphone(client):
+    t = "2026-11-02 16:{:02d}:00 +0900"
+    w = {"name": "室内 步行", "location": "室内", "isIndoor": True,
+         "start": t.format(9), "end": t.format(23), "duration": 788,
+         "activeEnergyBurned": {"units": "kJ", "qty": 139.94},
+         "avgHeartRate": {"units": "bpm", "qty": 84.02},
+         "heartRate": {"avg": {"qty": 84.02, "units": "bpm"}, "max": {"qty": 103, "units": "bpm"}},
+         "stepCount": [{"qty": 79.2, "date": t.format(9), "source": "", "units": "步"},
+                       {"qty": 80.8, "date": t.format(10), "source": "", "units": "步"}]}
+    metrics = [{"name": "step_count", "units": "count", "data": [
+        {"source": "", "date": "2026-11-02 09:00:00 +0900", "qty": 1234.4},
+        {"source": "", "date": "2026-11-02 10:00:00 +0900", "qty": 100.2}]},
+        {"name": "walking_step_length", "units": "cm", "data": [
+            {"qty": 53.5, "date": "2026-11-02 12:00:00 +0900", "source": "iPhone"}]},
+        {"name": "number_of_times_fallen", "units": "count", "data": [
+            {"qty": 1, "date": "2026-11-02 12:00:00 +0900", "source": "Watch"}]}]
+    client.post("/api/v1/imports/health-auto-export",
+                json={"data": {"workouts": [w], "metrics": metrics}})
+    rec = client.get("/api/v1/records", params={"category": "workout"}).json()["records"][0]
+    assert rec["data"]["activity_type"] == "walking" and rec["data"]["active_kcal"] == 33.45
+    assert rec["data"]["avg_hr"] == 84.02 and rec["data"]["step_count"] == 160
+    steps = client.get(f"/api/v1/records/{rec['id']}/series",
+                       params={"name": "step_count"}).json()["series"][0]
+    assert steps["unit"] == "count"
+    day = client.get("/api/v1/summary/day", params={"date": "2026-11-02"}).json()
+    assert day["activity"]["steps"] == 1335
+    metrics_by = {m["name"]: m for m in client.get("/api/v1/metrics").json()["metrics"]}
+    assert metrics_by["walking_step_length"]["aggregation"] == "avg"
+    assert metrics_by["number_of_times_fallen"]["aggregation"] == "sum"
+
+
+def test_activity_type_names():
+    from lifeos.importers import activity_type
+    assert activity_type("室外 跑步") == "running"
+    assert activity_type("功能性力量训练") == "functional_strength_training"
+    assert activity_type("Outdoor Walk") == "walking"
+    assert activity_type("某种新运动") == "other"

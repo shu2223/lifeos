@@ -28,6 +28,11 @@ SLEEP_METRICS = {"in_bed_min": "sleep_in_bed", "asleep_unstaged_min": "sleep_asl
                  "core_min": "sleep_core", "deep_min": "sleep_deep", "rem_min": "sleep_rem",
                  "awake_min": "sleep_awake"}
 MAX_RANGE_DAYS = 400
+WHOLE = {"steps", "flights_climbed", "stand_hours"}  # summed from fractional hourly values
+
+
+def _shown(key: str, value: float) -> float:
+    return round(value) if key in WHOLE else value
 
 
 def _metric_days(conn, name: str, d_from: str, d_to: str) -> dict[str, dict]:
@@ -67,7 +72,7 @@ def day(conn, d: str) -> dict:
     recs = records.search(conn, date=d, order="asc", limit=records.MAX_LIMIT)["records"]
     meals = [r for r in recs if r["category"] == "meal"]
     intake = _sum_nutrients(meals)
-    activity = {k: v[d]["value"] for k, name in DAY_METRICS.items()
+    activity = {k: _shown(k, v[d]["value"]) for k, name in DAY_METRICS.items()
                 if d in (v := _metric_days(conn, name, d, d))}
     if "water_ml" in intake:
         activity["water_ml"] = round(activity.get("water_ml", 0) + intake["water_ml"])
@@ -136,7 +141,7 @@ def days(conn, d_from: str, d_to: str) -> dict:
     for i in range((end - start).days + 1):
         d = (start + timedelta(days=i)).isoformat()
         row = {"date": d, "intake": intake.get(d, {})}
-        row.update({k: v[d]["value"] for k, v in metric_days.items() if d in v})
+        row.update({k: _shown(k, v[d]["value"]) for k, v in metric_days.items() if d in v})
         if d in weight:
             row["weight_kg"] = weight[d]["value"]
         if sleep.get(d, {}).get("asleep_hours"):

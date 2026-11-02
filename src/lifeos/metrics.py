@@ -55,7 +55,13 @@ SLEEP_ASLEEP = ("sleep_asleep", "sleep_core", "sleep_deep", "sleep_rem")
 # Apple stores these as fractions (0.97) under unit "%"; we store percent (97).
 PERCENT_FRACTION = {"oxygen_saturation", "body_fat_percentage"}
 # Cumulative HealthKit quantity types not in the catalog still need sum aggregation.
-_SUM_HINTS = ("Dietary", "Distance", "Count", "Energy", "Time", "FlightsClimbed")
+_SUM_HINTS = ("dietary", "distance", "count", "energy", "time", "flights")
+_AVG_HINTS = ("speed", "rate", "length", "percentage", "average", "test", "contact")
+# Unit labels as phones write them with localized units turned on.
+UNIT_ALIASES = {"bpm": "count/min", "步": "count", "次": "count", "steps": "count",
+                "次/分": "count/min", "千卡": "kcal", "大卡": "kcal", "千焦": "kJ",
+                "公里": "km", "千米": "km", "米": "m", "厘米": "cm", "分钟": "min", "小时": "hr",
+                "秒": "s", "毫秒": "ms", "公斤": "kg", "千克": "kg", "毫升": "mL", "升": "L"}
 
 ALIASES = {alias: name for name, row in CATALOG.items() for alias in row[4]}
 BY_HK = {row[3]: name for name, row in CATALOG.items() if row[3]}
@@ -66,7 +72,7 @@ _UNITS = {
     ("mi", "km"): 1.609344, ("m", "km"): 0.001, ("km", "m"): 1000.0, ("yd", "m"): 0.9144,
     ("ft", "cm"): 30.48, ("in", "cm"): 2.54, ("m", "cm"): 100.0, ("ft", "m"): 0.3048,
     ("mi", "m"): 1609.344, ("km/hr", "km/hr"): 1.0, ("mi/hr", "km/hr"): 1.609344,
-    ("m/s", "km/hr"): 3.6, ("bpm", "count/min"): 1.0,
+    ("m/s", "km/hr"): 3.6,
     ("hr", "min"): 60.0, ("s", "min"): 1 / 60, ("ms", "ms"): 1.0,
     ("ml", "mL"): 1.0, ("L", "mL"): 1000.0, ("fl_oz_us", "mL"): 29.5735,
     ("mmol<180.1558800000541>/L", "mg/dL"): 18.0156, ("mmol/L", "mg/dL"): 18.0156,
@@ -94,14 +100,17 @@ def from_hk(identifier: str) -> str:
 
 
 def guess_aggregation(name: str, hk_suffix: str | None = None) -> str:
-    probe = hk_suffix or name
-    if name.startswith("dietary_") or any(h in probe for h in _SUM_HINTS):
+    probe = (hk_suffix or name).lower()
+    if name.startswith("dietary_"):
+        return "sum"
+    if any(h in probe for h in _SUM_HINTS) and not any(h in probe for h in _AVG_HINTS):
         return "sum"
     return "avg"
 
 
 def convert(metric: str, value: float, unit: str, target: str) -> tuple[float, str]:
     """Convert into the metric's catalog unit where we know how; otherwise keep as given."""
+    unit = UNIT_ALIASES.get(unit, unit)
     if metric in PERCENT_FRACTION and unit == "%" and value <= 1.0:
         return value * 100, "%"
     if not unit or unit == target:
