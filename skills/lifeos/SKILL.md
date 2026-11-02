@@ -11,21 +11,22 @@ guessing.
 
 ## Connecting
 
-- **Base URL**: `$LIFEOS_URL`, for example `https://yishuapp.com/life`. On the server itself
-  it is `http://127.0.0.1:8773`.
+- **API root**: `$LIFEOS_URL`, for example `https://yishuapp.com/life/api/v1`. On the server
+  itself it is `http://127.0.0.1:8773/api/v1`. Every call goes under this address. Other paths
+  on the same site may sit behind the owner's login.
 - **Token**: `$LIFEOS_TOKEN`. Every agent has its own token, which the owner creates with
   `lifeos token create <agent-name>`.
 - If either is missing, ask the user once.
 - Never print the token, repeat it, or write it into a record.
 
 Every call sends `Authorization: Bearer $LIFEOS_TOKEN`. Request bodies are JSON. Read the full
-manual once per session before your first write: `GET $LIFEOS_URL/api/v1/manual`. It covers
-every endpoint, schema and recipe.
+manual once per session before your first write: `GET $LIFEOS_URL/manual`. It covers every
+endpoint, schema and recipe.
 
 ```bash
 H="Authorization: Bearer $LIFEOS_TOKEN"
-curl -s "$LIFEOS_URL/api/v1/context" -H "$H"
-curl -s -X POST "$LIFEOS_URL/api/v1/records" -H "$H" -H "Content-Type: application/json" \
+curl -s "$LIFEOS_URL/context" -H "$H"
+curl -s -X POST "$LIFEOS_URL/records" -H "$H" -H "Content-Type: application/json" \
   --data-binary @- <<'JSON'
 {"category": "meal", "start": "12:30", "data": {"items": [
   {"name": "牛肉面", "amount": 1, "unit": "碗", "grams": 550, "kcal": 620, "protein_g": 30,
@@ -37,15 +38,17 @@ JSON
 On the server itself, `lifeos api GET context` and `lifeos api POST records <<'JSON' …` do the
 same thing using the server's own token.
 
+Paths in the table are relative to `$LIFEOS_URL`.
+
 | Call | Use |
 |---|---|
-| `GET /api/v1/context` | start here: current time, timezone, profile and goals, today so far, frequent foods |
-| `GET /api/v1/foods?q=牛肉面` | the user's food library |
-| `POST /api/v1/records` | a meal, workout, mood, diary entry, symptom, medication or expense |
-| `PATCH /api/v1/records/{id}` | fix a record; `data` is merged and arrays are replaced |
-| `DELETE /api/v1/records/{id}` | remove a record (it can be restored) |
-| `POST /api/v1/samples` | numbers such as weight or water: `{"samples": [{"metric": "body_mass", "value": 61.8}]}` |
-| `GET /api/v1/summary/day` | today's intake against goals, plus steps, sleep and workouts |
+| `GET /context` | start here: current time, timezone, profile and goals, today so far, frequent foods |
+| `GET /foods?q=牛肉面` | the user's food library |
+| `POST /records` | a meal, workout, mood, diary entry, symptom, medication or expense |
+| `PATCH /records/{id}` | fix a record; `data` is merged and arrays are replaced |
+| `DELETE /records/{id}` | remove a record (it can be restored) |
+| `POST /samples` | numbers such as weight or water: `{"samples": [{"metric": "body_mass", "value": 61.8}]}` |
+| `GET /summary/day` | today's intake against goals, plus steps, sleep and workouts |
 
 ## How to behave
 
@@ -53,11 +56,11 @@ same thing using the server's own token.
   record in a single turn. Estimate grams, kcal, protein, fat and carbs for each item, and
   mark them `estimated` with a `confidence`. Ask a question only if any guess would be wildly
   off.
-- Take the date and time from `GET /api/v1/context`, not from your own sense of the date.
+- Take the date and time from `GET /context`, not from your own sense of the date.
   Times without an offset are read in the user's timezone.
-- Check `frequent_foods` and `GET /api/v1/foods?q=` first, so foods the user eats often get
+- Check `frequent_foods` and `GET /foods?q=` first, so foods the user eats often get
   consistent numbers. When the user gives numbers from a label, save the food with
-  `POST /api/v1/foods`.
+  `POST /foods`.
 - Fix mistakes with `PATCH`. Remove duplicates with `DELETE`. Never write a second record to
   fix the first.
 - Workouts, steps, sleep and heart rate from Apple Watch arrive automatically, so don't enter

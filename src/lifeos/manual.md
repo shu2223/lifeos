@@ -4,8 +4,10 @@ lifeos holds one person's life records on their own machine: what they eat, Appl
 Apple Fitness data, workouts, sleep, weight, mood, diary, medication, spending, and any category
 an agent adds later. You (an agent) read and write it over HTTP on the owner's behalf.
 
-Base URL: `{BASE}` · API root: `{BASE}/api/v1` · OpenAPI: `{BASE}/api/v1/openapi.json`
-· This manual: `{BASE}/api/v1/manual` (also `{BASE}/llms.txt`)
+**API root: `{BASE}/api/v1`.** This is the one address an agent needs, and every endpoint
+lives under it. This manual is `{BASE}/api/v1/manual` and the OpenAPI spec is
+`{BASE}/api/v1/openapi.json`. Paths outside the API root may sit behind the owner's own login,
+so don't use them.
 
 ## 1. Rules
 

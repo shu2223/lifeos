@@ -45,7 +45,7 @@ install -d -m 700 /etc/lifeos && (umask 077; lifeos token create mini-pc > /etc/
 接入一个新 agent：
 
 1. 先给它发一个 token：`lifeos token create <agent名>`。每个 agent 用自己的 token，写入记录时就能看出是谁写的，不想要了也可以单独吊销。
-2. 告诉它地址和 token：环境变量 `LIFEOS_URL=https://yishuapp.com/life` 和 `LIFEOS_TOKEN=<token>`。如果平台不能设环境变量，就写进你上传的那份 skill 副本里；但不要把 token 提交进这个公开仓库。
+2. 告诉它地址和 token：环境变量 `LIFEOS_URL=https://yishuapp.com/life/api/v1` 和 `LIFEOS_TOKEN=<token>`。地址一定要写到 `/api/v1`：`/life` 本身在 Cloudflare Access 后面，agent 打开会卡在登录页。如果平台不能设环境变量，就写进你上传的那份 skill 副本里；但不要把 token 提交进这个公开仓库。
 3. 把 skill 交给它：
    - 支持 skills 文件夹的 agent：把整个 `skills/lifeos` 文件夹放进它的 skills 目录。
    - Claude 网页版或 App：把这个文件夹打成 zip，在设置的 Skills 里上传。它运行 skill 的沙盒默认可能不能联网，需要允许访问 `yishuapp.com`。
@@ -71,12 +71,12 @@ install -d -m 700 /etc/lifeos && (umask 077; lifeos token create mini-pc > /etc/
 
 服务只监听 127.0.0.1，由 Cloudflare Tunnel 转发进来。`lifeos.service` 设置了 `LIFEOS_PREFIX=/life`，所以同一套接口在本机的 `/` 和 `/life` 两个路径下都能访问。agent 需要的东西都在 `/life/api/` 下面，包括 API、说明书 `/life/api/v1/manual` 和 OpenAPI。
 
-需要你在 Cloudflare Zero Trust 里做两件事：
+Cloudflare Zero Trust 里的配置（2026-11-02 已配好）：
 
-1. **Tunnel 加路由**：Networks → Tunnels → 这条隧道 → Public Hostname，新增一条，域名填 `yishuapp.com`，路径填 `life`，服务填 `http://127.0.0.1:8773`。这条要排在整个域名指向状态页的那条之前，和 `classroom` 那条的做法一样。
-2. **Access 怎么放行**，二选一：
-   - **推荐**：Access → Applications 新建一个 self-hosted 应用，地址填 `yishuapp.com/life/api`，策略动作选 **Bypass**、Include 选 Everyone。lifeos 自己会校验每个 agent 的 token，没有 token 一律返回 401，所以任何拿到 token 的 agent 都能直接连上。以后前端放在 `/life/` 下的其他路径，仍然受现有 Access 保护。
-   - 保守做法：`/life` 全部留在 Access 后面，给每个 agent 发一个 Cloudflare Service Token，请求时多带 `CF-Access-Client-Id` 和 `CF-Access-Client-Secret` 两个头。Health Auto Export 可以这样配，但很多 agent 只能填一个认证头，就连不上了。
+1. **Tunnel 路由**：Public Hostname 新增一条，域名 `yishuapp.com`，路径 `^/life`（路径是正则，加 `^/` 才不会误配到其他含 life 的地址），服务 `http://127.0.0.1:8773`。这条排在 `^/classroom` 之后、指向整个域名的那条之前。
+2. **Access 放行 API**：新建 self-hosted 应用 “Yishu life API”，地址 `yishuapp.com/life/api`，策略动作 **Bypass**、Include 选 Everyone。lifeos 自己会校验每个 agent 的 token，没有 token 一律返回 401。`/life/` 下除 `/life/api` 以外的路径（包括以后的前端）仍然受原来的 Access 保护，只有你本人能登录。
+
+所以给 agent 的地址是 **`https://yishuapp.com/life/api/v1`**，不登录就能访问，它会列出说明书和 OpenAPI 的链接。另一种做法是把 `/life` 全部留在 Access 后面，给每个 agent 发 Cloudflare Service Token。但很多 agent 只能填一个认证头，这样就连不上了。
 
 Cloudflare 免费版限制单个请求最大 100 MB。比这更大的 `export.zip` 不能走公网上传，可以 scp 到小主机，再执行 `lifeos import apple-health`。
 

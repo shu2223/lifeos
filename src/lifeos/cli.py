@@ -112,7 +112,7 @@ def cmd_status(_args) -> None:
 def cmd_api(args) -> None:
     """Call the running API as an agent: the token comes from a file, never the command line,
     so it stays out of shell history and agent transcripts."""
-    base = os.environ.get("LIFEOS_URL", f"http://127.0.0.1:{DEFAULT_PORT}").rstrip("/")
+    base = os.environ.get("LIFEOS_URL", f"http://127.0.0.1:{DEFAULT_PORT}/api/v1").rstrip("/")
     token = os.environ.get("LIFEOS_TOKEN")
     if not token:
         token_file = Path(os.environ.get("LIFEOS_TOKEN_FILE", "/etc/lifeos/agent.token"))
@@ -120,7 +120,7 @@ def cmd_api(args) -> None:
             token = token_file.read_text().strip()
         except OSError as e:
             sys.exit(f"no token: set LIFEOS_TOKEN or LIFEOS_TOKEN_FILE ({e})")
-    path = args.path if args.path.startswith("/api/") else "/api/v1/" + args.path.lstrip("/")
+    path = "/" + args.path.lstrip("/").removeprefix("api/v1/")
     body = args.body
     if body == "-" or (body is None and args.method in ("POST", "PATCH") and not sys.stdin.isatty()):
         body = sys.stdin.read()
@@ -178,7 +178,7 @@ def main(argv=None) -> None:
 
     a = sub.add_parser("api", help="call the API, e.g. `lifeos api GET context`")
     a.add_argument("method", type=str.upper, choices=["GET", "POST", "PATCH", "DELETE"])
-    a.add_argument("path", help="path under /api/v1, with query string")
+    a.add_argument("path", help="path under the API root ($LIFEOS_URL), with query string")
     a.add_argument("body", nargs="?", help="JSON body, or - to read stdin")
     a.set_defaults(func=cmd_api)
 

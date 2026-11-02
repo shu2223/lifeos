@@ -285,7 +285,8 @@ def public_router() -> APIRouter:
             "name": "lifeos", "version": __version__,
             "about": "The owner's personal records: meals, workouts, Apple Health, mood, "
                      "diary, body measurements and anything else, stored on their own machine.",
-            "manual": f"{b}{API}/manual", "openapi": f"{b}{API}/openapi.json",
+            "api_root": f"{b}{API}", "manual": f"{b}{API}/manual",
+            "openapi": f"{b}{API}/openapi.json",
             "auth": "Authorization: Bearer <token> on every /api/v1 call except this one",
             "start_here": f"GET {b}{API}/context",
         }
