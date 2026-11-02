@@ -7,6 +7,9 @@ Wants=network-online.target
 Environment=LIFEOS_HOME=/var/lib/lifeos
 # Public at https://yishuapp.com/life/ through the Cloudflare Tunnel; locally also at /.
 Environment=LIFEOS_PREFIX=/life
+# On this host everything but /life/api/ must come signed in by Cloudflare Access; the web
+# page's own calls (/life/web/api/) are the owner.
+Environment=LIFEOS_PUBLIC_HOST=yishuapp.com
 # Multipart uploads spool to TMPDIR; keep big Health exports on disk, not in RAM.
 Environment=TMPDIR=/var/lib/lifeos/tmp
 StateDirectory=lifeos

@@ -11,6 +11,10 @@ DEFAULT_PORT = 8773
 class Settings:
     home: Path
     prefix: str = ""  # URL prefix when served behind a path, e.g. "/life"
+    # Host name of the public site behind Cloudflare Access, e.g. "yishuapp.com". Requests for
+    # it must carry the Access header except under {prefix}/api/, which agents reach with
+    # tokens; the web page's own calls go to {prefix}/web/api/ and are signed in by Access.
+    public_host: str | None = None
 
     @property
     def db_path(self) -> Path:
@@ -40,4 +44,5 @@ def from_env() -> Settings:
     prefix = os.environ.get("LIFEOS_PREFIX", "").rstrip("/")
     if prefix and not prefix.startswith("/"):
         prefix = "/" + prefix
-    return Settings(home=Path(os.environ.get("LIFEOS_HOME", DEFAULT_HOME)), prefix=prefix)
+    return Settings(home=Path(os.environ.get("LIFEOS_HOME", DEFAULT_HOME)), prefix=prefix,
+                    public_host=os.environ.get("LIFEOS_PUBLIC_HOST") or None)

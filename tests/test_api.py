@@ -267,3 +267,51 @@ def test_served_under_prefix_and_root(tmp_path, tokens, settings):
         assert "/life/api/v1/records" in spec["paths"] and "/api/v1/records" not in spec["paths"]
         assert c.get("/api/v1/openapi.json").json() == spec
         assert c.get("/life/api/v1/docs").status_code == 200
+
+
+def _public_client(settings):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from lifeos.app import create_app
+    return TestClient(create_app(replace(settings, prefix="/life", public_host="yishuapp.com")),
+                      base_url="https://yishuapp.com")
+
+
+def test_page_is_served(client):
+    page = client.get("/")
+    assert page.status_code == 200 and "生活记录" in page.text
+    assert "default-src 'self'" in page.headers["content-security-policy"]
+    assert client.get("/static/app.js").status_code == 200
+    assert client.get("/static/../app.py").status_code == 404
+    assert client.get("/static/nope.js").status_code == 404
+
+
+def test_web_mount_signed_in_by_cloudflare_access(settings, tokens):
+    access = {"Cf-Access-Jwt-Assertion": "x"}
+    with _public_client(settings) as c:
+        # Page and web API need the Access header on the public host.
+        assert c.get("/life/").status_code == 403
+        assert c.get("/life/web/api/v1/whoami").status_code == 403
+        assert c.get("/life/", headers=access).status_code == 200
+        me = c.get("/life/web/api/v1/whoami", headers=access).json()
+        assert me == {"name": "web", "scope": "admin"}
+        # Writes must come from the site itself.
+        body = {"category": "mood", "data": {"score": 7}}
+        assert c.post("/life/web/api/v1/records", json=body, headers=access).status_code == 403
+        assert c.post("/life/web/api/v1/records", json=body, headers={
+            **access, "Origin": "https://evil.example"}).status_code == 403
+        ok = c.post("/life/web/api/v1/records", json=body,
+                    headers={**access, "Origin": "https://yishuapp.com"})
+        assert ok.status_code == 201 and ok.json()["record"]["created_by"] == "web"
+        # The agent API stays open to tokens only; the Access header means nothing there.
+        assert c.get("/life/api/v1/whoami", headers=access).status_code == 401
+        auth = {"Authorization": f"Bearer {tokens['read']}"}
+        assert c.get("/life/api/v1/whoami", headers=auth).json()["name"] == "test-read"
+        assert c.get("/life/api/v1").status_code == 200
+
+
+def test_web_mount_locally_takes_a_token(client, tokens):
+    assert client.get("/web/api/v1/whoami").json()["name"] == "test-write"
+    assert client.get("/web/api/v1/whoami", headers={"Authorization": ""}).status_code == 401

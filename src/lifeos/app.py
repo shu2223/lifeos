@@ -4,6 +4,7 @@ import logging
 import re
 from contextlib import asynccontextmanager
 from importlib import resources
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Query, Request
@@ -27,6 +28,18 @@ from .timeutil import iso, now, parse, utc_now
 
 log = logging.getLogger("lifeos")
 API = "/api/v1"
+WEB = "/web"  # the web page's own mount of the API, behind Cloudflare Access
+WEB_DIR = Path(__file__).parent / "web"
+ACCESS_HEADER = "cf-access-jwt-assertion"
+PAGE_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
+                               "img-src 'self' blob: data:; connect-src 'self'; "
+                               "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+                               "form-action 'self'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-cache",
+}
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,47}$")
 MANUAL = resources.files("lifeos").joinpath("manual.md").read_text(encoding="utf-8")
 
@@ -155,9 +168,31 @@ Db = Annotated[Any, Depends(get_db)]
 _bearer = HTTPBearer(auto_error=False, description="Authorization: Bearer lifeos_...")
 
 
+def _public(request: Request) -> bool:
+    host = request.app.state.settings.public_host
+    return bool(host) and request.headers.get("host") == host
+
+
+def _web_actor(request: Request) -> auth.Actor | None:
+    """The owner in their own browser on the public site. Cloudflare Access signs every request
+    under the web mount in before it reaches us (the same rule as the other yishuapp.com
+    pages), so the header's presence there means it is them."""
+    s = request.app.state.settings
+    if not (_public(request) and request.url.path.startswith(s.prefix + WEB + "/")
+            and request.headers.get(ACCESS_HEADER)):
+        return None
+    if request.method not in ("GET", "HEAD") and \
+            request.headers.get("origin") != f"https://{s.public_host}":
+        raise ApiError(403, "forbidden", "refused a write from another site")
+    return auth.Actor("web", "admin")
+
+
 def require(scope: str):
     def dep(request: Request, conn: Db,
             creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> auth.Actor:
+        web = _web_actor(request)
+        if web is not None:
+            return web
         token = creds.credentials if creds else request.headers.get("x-api-key")
         if not token:
             raise ApiError(401, "unauthorized", "missing token",
@@ -248,10 +283,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     public, api = public_router(), api_router()
     app.include_router(public, prefix=p)
     app.include_router(api, prefix=p + API)
+    app.include_router(api, prefix=p + WEB + API, include_in_schema=False)
     if p:
         app.include_router(public, include_in_schema=False)
         app.include_router(api, prefix=API, include_in_schema=False)
+        app.include_router(api, prefix=WEB + API, include_in_schema=False)
         app.add_api_route(API + "/openapi.json", lambda: app.openapi(), include_in_schema=False)
+
+    @app.middleware("http")
+    async def access_guard(request: Request, call_next):
+        # A safety net in case the Cloudflare Access app is ever removed or misconfigured:
+        # on the public host only the agent API may be reached without signing in.
+        if _public(request) and not request.headers.get(ACCESS_HEADER):
+            path = request.url.path
+            if not (path == p + API or path.startswith(p + API + "/")):
+                return JSONResponse({"error": {
+                    "code": "forbidden", "message": "sign in through Cloudflare Access",
+                    "hint": f"agents use {p}{API} with a token"}}, status_code=403)
+        return await call_next(request)
     return app
 
 
@@ -278,6 +327,16 @@ def public_router() -> APIRouter:
         return {"ok": True}
 
     @r.get("/", include_in_schema=False)
+    def page():
+        return FileResponse(WEB_DIR / "index.html", headers=PAGE_HEADERS)
+
+    @r.get("/static/{name}", include_in_schema=False)
+    def static(name: str):
+        path = WEB_DIR / name
+        if not re.fullmatch(r"[\w-]+\.(js|css|svg|png)", name) or not path.is_file():
+            raise not_found("file", name)
+        return FileResponse(path, headers=PAGE_HEADERS)
+
     @r.get(API, summary="Discovery: what this API is and where to start")
     def index(request: Request):
         b = _base(request)

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:,">
+<title>生活记录</title>
+<link rel="stylesheet" href="static/style.css">
+<script src="static/app.js" defer></script>
+</head>
+<body>
+<main class="page">
+  <header class="top">
+    <div>
+      <p class="small"><a class="back" id="homeLink" href="/">← 主页</a></p>
+      <h1>生活记录</h1>
+      <p class="muted small" id="subtitle">正在读取…</p>
+    </div>
+    <div class="toolbar">
+      <button id="addButton" class="btn primary" type="button">记一笔</button>
+    </div>
+  </header>
+
+  <nav id="tabs" class="filters tabs" aria-label="页面">
+    <a href="#/today" data-view="today">今天</a>
+    <a href="#/records" data-view="records">记录</a>
+    <a href="#/trends" data-view="trends">趋势</a>
+    <a href="#/foods" data-view="foods">食物</a>
+    <a href="#/settings" data-view="settings">设置</a>
+  </nav>
+
+  <ul id="issues" class="issues" hidden></ul>
+
+  <div id="view" class="view" aria-live="polite"></div>
+</main>
+
+<dialog id="recordDialog" class="wide" aria-labelledby="recordTitle">
+  <div class="dialog-body">
+    <div class="dialog-head">
+      <div><h2 id="recordTitle"></h2><p id="recordMeta" class="muted small"></p></div>
+      <button class="btn icon close-dialog" type="button" aria-label="关闭"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div id="recordBody" class="record-body"></div>
+  </div>
+</dialog>
+
+<dialog id="addDialog" aria-labelledby="addTitle">
+  <form id="addForm" class="dialog-body">
+    <div class="dialog-head">
+      <div><h2 id="addTitle">记一笔</h2><p class="muted small">平时让 agent 记录更省事，这里用来手动补一条。</p></div>
+      <button class="btn icon close-dialog" type="button" aria-label="关闭"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div id="addKinds" class="filters" role="tablist" aria-label="记录类型"></div>
+    <div id="addFields" class="form-grid"></div>
+    <p id="addError" class="error" hidden></p>
+    <div class="dialog-foot"><button class="btn primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+
+<dialog id="foodDialog" aria-labelledby="foodTitle">
+  <form id="foodForm" class="dialog-body">
+    <div class="dialog-head">
+      <div><h2 id="foodTitle">食物</h2><p class="muted small">agent 记录同样的食物时会直接用这里的营养数据。</p></div>
+      <button class="btn icon close-dialog" type="button" aria-label="关闭"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div id="foodFields" class="form-grid"></div>
+    <p id="foodError" class="error" hidden></p>
+    <div class="dialog-foot">
+      <button id="foodDelete" class="btn" type="button">删除</button>
+      <button class="btn primary" type="submit">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="tokenDialog" aria-labelledby="tokenTitle">
+  <div class="dialog-body">
+    <div class="dialog-head">
+      <div><h2 id="tokenTitle">新的 token</h2><p class="muted small">只显示这一次。关闭后无法再查看，丢了就吊销重发。</p></div>
+      <button class="btn icon close-dialog" type="button" aria-label="关闭"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div id="tokenBody" class="dialog-stack"></div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
