@@ -299,7 +299,7 @@ function lineChart(host, o) {
 // points: [{key, label, y}] one per category slot; columns <= 24px with a 4px rounded cap.
 function barChart(host, o) {
   const {W, tip} = chartFrame(host);
-  const H = o.height || 200, padL = 40, padR = 12, padT = 10, padB = 24;
+  const H = o.height || 200, padL = 40, padR = o.goal ? 64 : 12, padT = 10, padB = 24;
   const n = o.points.length;
   if (!o.points.some(p => p.y)) { host.replaceChildren(h("p", {class: "empty"}, "这段时间没有数据。")); return; }
   const max = Math.max(...o.points.map(p => p.y || 0), o.goal || 0);
@@ -320,7 +320,7 @@ function barChart(host, o) {
   });
   if (o.goal) {
     svg.append(s("line", {class: "crosshair", x1: padL, x2: W - padR, y1: Y(o.goal), y2: Y(o.goal)}),
-      s("text", {class: "tick", x: W - padR, y: Y(o.goal) - 4, "text-anchor": "end"}, "目标 " + compact(o.goal)));
+      s("text", {class: "tick", x: W - padR + 6, y: Y(o.goal) + 4}, "目标 " + compact(o.goal)));
   }
   const idx = xTickIndices(n, Math.max(2, Math.floor((W - padL - padR) / 60)));
   idx.forEach(i => svg.append(s("text", {class: "tick", x: padL + (i + 0.5) * slot, y: H - 6, "text-anchor": "middle"}, o.points[i].label)));

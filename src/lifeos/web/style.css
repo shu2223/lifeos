@@ -298,6 +298,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .35); }
   .page { padding: 16px 16px 40px; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .macros { gap: 8px; }
+  .macro .line { flex-direction: column; align-items: flex-start; }
   .form-grid { grid-template-columns: minmax(0, 1fr); }
   .facts.two { grid-template-columns: max-content minmax(0, 1fr); }
   .item-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }

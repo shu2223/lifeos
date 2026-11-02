@@ -11,6 +11,30 @@ flowchart LR
   F[以后：管理页面前端] -.-> S
 ```
 
+## 截图
+
+截图里的数据全是 [scripts/make_demo.py](scripts/make_demo.py) 生成的示例，不是真人的记录。
+
+![今天](docs/screenshots/today.png)
+
+| 手机 | 运动详情（心率曲线和结束后的恢复） |
+|---|---|
+| <img src="docs/screenshots/phone.png" width="300" alt="手机上的今天页"> | <img src="docs/screenshots/workout.png" alt="运动详情"> |
+
+![趋势：近 90 天步数](docs/screenshots/trends.png)
+
+想先看看效果：
+
+```bash
+LIFEOS_HOME=/tmp/lifeos-demo .venv/bin/python scripts/make_demo.py
+```
+
+```bash
+LIFEOS_HOME=/tmp/lifeos-demo .venv/bin/lifeos serve --port 8780
+```
+
+然后打开第一条命令最后打印的地址（`http://127.0.0.1:8780/#token=…`）。
+
 ## 设计要点
 
 - **一份给 agent 看的说明书**：`GET /api/v1/manual`（同 `/llms.txt`），内容在 [manual.md](src/lifeos/manual.md)。另外有 `/api/v1/openapi.json` 和 `/api/v1/docs`。agent 先调用 `GET /api/v1/context`，一次拿到当前时间、时区、个人资料与目标、有哪些类别、今天已记录的内容和常吃的食物。
@@ -72,14 +96,44 @@ install -d -m 700 /etc/lifeos && (umask 077; lifeos token create mini-pc > /etc/
 | `lifeos token create <agent名> [--scope read\|write\|admin]` | 给一个 agent 发 token，只显示一次 |
 | `lifeos token list` / `lifeos token revoke <名字>` | 查看 / 吊销 token |
 | `lifeos api GET context` | 以 agent 身份调用 API，token 读自 `/etc/lifeos/agent.token` |
-| `lifeos import apple-health ~/export.zip` | 导入苹果健康的完整导出 |
+| `lifeos receive` | 打开 LocalSend 等手机发导出文件，确认后接收并导入（见下文） |
+| `lifeos import apple-health ~/export.zip` | 导入已经在小主机上的苹果健康导出 |
 | `lifeos status` | 看看存了多少东西 |
 | `lifeos backup` | 立即做一次快照 |
 
 ## 苹果健康 / 苹果健身
 
-1. **历史数据**：iPhone 上打开“健康”，点头像，选“导出所有健康数据”，然后把 zip 传到小主机。可以用 scp 传过来后执行 `lifeos import apple-health`，也可以 `POST /api/v1/imports/apple-health`。60 万条样本大约 13 秒导入完，内存占用 60 MB 左右。
-2. **之后自动同步**：iPhone 上的 Health Auto Export App 选 REST API 自动化，格式选 JSON，运动数据选 Version 2 并打开 Include Workout Metrics，地址填 `https://yishuapp.com/life/api/v1/imports/health-auto-export`，Header 加 `Authorization: Bearer <token>`。聚合方式选“小时”，或者关闭 Summarize。按天汇总的数据和逐条的原始数据如果覆盖同一天，会重复计算。
+**每天自动同步**：iPhone 上的 Health Auto Export App 建两个 REST API 自动化，一个“健康指标”，一个“运动”。
+- 地址填 `https://yishuapp.com/life/api/v1/imports/health-auto-export`，Header 加 `Authorization: Bearer <token>`，格式选 JSON。
+- 健康指标的聚合方式选“小时”，或者关闭 Summarize。按天汇总的数据和逐条的原始数据如果覆盖同一天，会重复计算。
+- 运动选 Version 2，并打开 Include Workout Metrics。每次运动的心率曲线、心率恢复、每分钟的能量和距离都会挂在那条运动记录下面。
+
+### 导入以前的历史
+
+有三种办法，同样的数据导入两次也不会重复：
+
+1. **“健康”App 导出，再用 LocalSend 发到小主机（推荐）**。这是苹果的原始完整数据，包括每个数据点、每次运动的完整统计、活动圆环和路线。
+   1. iPhone：打开“健康”，点头像，选“导出所有健康数据”，选“存储到文件”。数据多时要几分钟，期间保持屏幕常亮，停在“健康”App 里。
+   2. 小主机：运行 `lifeos receive --alias 小主机`。
+   3. iPhone：打开 LocalSend，选“发送”→“文件”→ `导出.zip`，再选“小主机”。
+   4. 小主机终端里会列出发送方和文件，输入 `y` 才接收。收完会自动识别文件类型，原件存进 `/var/lib/lifeos/raw/`，然后导入。
+2. **Health Auto Export 手动上传**。在上面两个自动化里各点一次“导出现有数据 / Manual Upload”，日期从最早选到今天。数据会分批推到 lifeos，不用传文件。
+3. **Health Auto Export 的 CSV 导出**（一个装着很多 CSV 的 zip）。同样用 `lifeos receive` 接收，或者用 `lifeos import health-auto-export-csv <zip>` 导入。只会导入里面的用药记录，因为苹果的导出没有这部分。其余数据请用前两种办法。
+
+`lifeos receive` 需要 LocalSend 的命令行版。小主机没有桌面，用不了图形版。在 [LocalSend 的发布页](https://github.com/localsend/localsend/releases) 下载 `LocalSend-CLI-<版本>-linux-x86-64.tar.gz`，解压后把 `localsend-cli` 放到 `/usr/local/bin`。它只在 `lifeos receive` 运行期间监听局域网（端口 53317），收到一次就退出，平时不开着。
+
+`lifeos receive` 的常用参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--alias 小主机` | 手机上显示的设备名，默认是主机名 |
+| `--from <手机名>` | 没人守在终端时用：只自动接收这台设备发来的导出类文件（zip、xml、json、csv），其他请求一律拒绝。手机名就是 LocalSend 里显示的设备名 |
+| `--no-import` | 只收文件、存进原件目录，不导入 |
+| `--timeout 60` | 最多等几分钟 |
+
+如果手机不在家，手机开着 Tailscale 也能发：在 LocalSend 里手动输入小主机的 Tailscale 地址。
+
+1.4 GB 左右的导出文件，传输只要几秒，导入大约一分钟。导入后会多出一个约 700 MB 的数据库，原件另外保留。Cloudflare 免费版限制单个请求最大 100 MB，所以大文件不要从网页上传，用 LocalSend 或 scp。
 
 ## 公网入口：yishuapp.com/life/
 
@@ -92,8 +146,6 @@ Cloudflare Zero Trust 里的配置（2026-11-02 已配好）：
 
 所以给 agent 的地址是 **`https://yishuapp.com/life/api/v1`**，不登录就能访问，它会列出说明书和 OpenAPI 的链接。另一种做法是把 `/life` 全部留在 Access 后面，给每个 agent 发 Cloudflare Service Token。但很多 agent 只能填一个认证头，这样就连不上了。
 
-Cloudflare 免费版限制单个请求最大 100 MB。比这更大的 `export.zip` 不能走公网上传，可以 scp 到小主机，再执行 `lifeos import apple-health`。
-
 ## 开发
 
 ```bash
@@ -102,7 +154,7 @@ cd /opt/lifeos && .venv/bin/pytest -q && .venv/bin/ruff check src tests
 
 ## 代码结构
 
-[app.py](src/lifeos/app.py) 是 HTTP 层；[records.py](src/lifeos/records.py)、[samples.py](src/lifeos/samples.py)、[foods.py](src/lifeos/foods.py) 和 [profile.py](src/lifeos/profile.py) 是各类数据；[categories.py](src/lifeos/categories.py) 是内置类别、schema 和饮食合计；[summary.py](src/lifeos/summary.py) 生成每日汇总；[importers/](src/lifeos/importers/) 是两种苹果健康导入；[db.py](src/lifeos/db.py) 是表结构。
+[app.py](src/lifeos/app.py) 是 HTTP 层；[records.py](src/lifeos/records.py)、[samples.py](src/lifeos/samples.py)、[foods.py](src/lifeos/foods.py) 和 [profile.py](src/lifeos/profile.py) 是各类数据；[categories.py](src/lifeos/categories.py) 是内置类别、schema 和饮食合计；[summary.py](src/lifeos/summary.py) 生成每日汇总；[importers/](src/lifeos/importers/) 是苹果健康和 Health Auto Export 的导入；[intake.py](src/lifeos/intake.py) 识别导出文件并存档，[receive.py](src/lifeos/receive.py) 驱动 LocalSend 接收；[db.py](src/lifeos/db.py) 是表结构。
 
 ## 许可证
 

@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import urllib.error
@@ -10,7 +11,7 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import auth, jobs
+from . import auth, intake, jobs
 from .config import DEFAULT_PORT, from_env
 from .db import log_change
 
@@ -47,37 +48,56 @@ def cmd_token(args) -> None:
             print(f"{t['name']:<24} {t['scope']:<6} {state:<8} last used {t['last_used_at']}")
 
 
+def _progress(stats) -> None:
+    print(f"\r{stats['samples_read']:>10} samples read, {stats['samples_added']:>10} new,"
+          f" {stats['workouts']} workouts", end="", file=sys.stderr, flush=True)
+
+
 def cmd_import(args) -> None:
     settings = from_env()
     conn = _conn()
     src = Path(args.path).expanduser().resolve()
     if not src.is_file():
         sys.exit(f"{src} is not a file")
+    path = src
+    if args.kind == "apple-health" and not args.no_copy:
+        dest = settings.raw_dir / "apple-health"
+        dest.mkdir(parents=True, exist_ok=True)
+        path = dest / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{src.name}"
+        shutil.copy2(src, path)
+        print(f"original kept at {path}", file=sys.stderr)
+    stats = intake.import_file(conn, settings, args.kind, path, "cli", _progress)
     if args.kind == "apple-health":
-        from .importers import apple_health
-        path = src
-        if not args.no_copy:
-            dest = settings.raw_dir / "apple-health"
-            dest.mkdir(parents=True, exist_ok=True)
-            path = dest / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{src.name}"
-            shutil.copy2(src, path)
-            print(f"original kept at {path}", file=sys.stderr)
-
-        def progress(stats):
-            print(f"\r{stats['samples_read']:>10} samples read, {stats['samples_added']:>10} new,"
-                  f" {stats['workouts']} workouts", end="", file=sys.stderr, flush=True)
-        stats = apple_health.run(conn, path, "cli", settings.files_dir, progress)
         print(file=sys.stderr)
-    elif args.kind == "health-auto-export-csv":
-        from .importers import hae_csv
-        stats = hae_csv.run(conn, src, "cli")
-    else:
-        from .importers import health_auto_export
-        stats = health_auto_export.run(conn, json.loads(src.read_text()), "cli",
-                                       settings.files_dir)
-    job_id = jobs.record(conn, args.kind.replace("-", "_"), str(src), "cli", "done", stats)
-    log_change(conn, "cli", "import", "import", job_id, after=stats)
     print(json.dumps(stats, ensure_ascii=False, indent=2))
+
+
+KIND_LABELS = {"apple-health": "“健康”App 的导出", "health-auto-export": "Health Auto Export JSON",
+               "health-auto-export-csv": "Health Auto Export CSV"}
+
+
+def cmd_receive(args) -> None:
+    from .receive import receive
+    settings = from_env()
+    conn = _conn()
+    interactive = args.trusted is None and sys.stdin.isatty()
+    if args.trusted is None and not interactive:
+        sys.exit("nobody at a terminal to confirm requests: pass --from <sending device name>")
+    files = receive(settings, alias=args.alias, port=args.port, trusted=args.trusted,
+                    timeout=args.timeout * 60, localsend=args.localsend, interactive=interactive)
+    for f in files:
+        kind = intake.detect(f)
+        if kind is None:
+            print(f"{f.name}：不是认识的导出文件，留在 {f.parent}")
+            continue
+        kept = intake.file_away(settings, kind, f)
+        print(f"{f.name}：{KIND_LABELS[kind]}，原件存到 {kept}")
+        if args.no_import:
+            continue
+        stats = intake.import_file(conn, settings, kind, kept, "cli", _progress)
+        if kind == "apple-health":
+            print(file=sys.stderr)
+        print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
 def cmd_backup(args) -> None:
@@ -166,12 +186,25 @@ def main(argv=None) -> None:
     t.set_defaults(func=cmd_token)
 
     i = sub.add_parser("import", help="import a file from this machine")
-    i.add_argument("kind", choices=["apple-health", "health-auto-export", "health-auto-export-csv"],
+    i.add_argument("kind", choices=intake.KINDS,
                    help="health-auto-export-csv reads the medication log from the app's CSV zip")
     i.add_argument("path")
     i.add_argument("--no-copy", action="store_true",
                    help="do not keep a copy of the original under the data directory")
     i.set_defaults(func=cmd_import)
+
+    r = sub.add_parser("receive", help="receive an export from the phone over LocalSend and import it",
+                       description="Runs the LocalSend CLI until one transfer arrives. Every request is "
+                                   "confirmed at the terminal, or, with --from, accepted only from "
+                                   "that device and only for export-like files.")
+    r.add_argument("--from", dest="trusted", metavar="DEVICE",
+                   help="accept without asking, but only from this LocalSend device name")
+    r.add_argument("--alias", default=socket.gethostname(), help="name shown on the phone")
+    r.add_argument("--port", type=int, default=53317)
+    r.add_argument("--timeout", type=int, default=60, help="minutes to wait (default 60)")
+    r.add_argument("--localsend", default="localsend-cli", help="LocalSend CLI executable")
+    r.add_argument("--no-import", action="store_true", help="only file it under raw/")
+    r.set_defaults(func=cmd_receive)
 
     b = sub.add_parser("backup", help="snapshot the database into the backups directory")
     b.add_argument("--keep", type=int, default=30)
