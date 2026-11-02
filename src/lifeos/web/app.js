@@ -690,6 +690,8 @@ async function guarded(fn) {
 
 // --- trends ----------------------------------------------------------------------------------
 
+const UNIT_LABELS = {"count": "", "count/min": "次/分", "min": "分钟", "hr": "小时", "degC": "°C", "mL": "ml",
+  "km/hr": "km/h", "appleEffortScore": "", "dBASPL": "dB"};
 const TREND_METRICS = [["energy", "热量"], ["body_mass", "体重"], ["step_count", "步数"], ["sleep", "睡眠"],
   ["exercise_time", "锻炼"], ["resting_heart_rate", "静息心率"], ["heart_rate_variability", "心率变异性"]];
 const RANGES = [[7, "7 天"], [30, "30 天"], [90, "90 天"], [365, "1 年"]];
@@ -726,7 +728,7 @@ async function viewTrends() {
     const m = metricMeta[t.metric] || {title: t.metric, unit: "", aggregation: "avg"};
     const [vals] = await dayRows([t.metric]);
     rows = days.map(d => ({date: d.date, value: vals[d.date] ?? null}));
-    kind = m.aggregation === "sum" ? "bar" : "line"; unit = m.unit === "count" ? "" : m.unit; title = m.title;
+    kind = m.aggregation === "sum" ? "bar" : "line"; unit = UNIT_LABELS[m.unit] ?? m.unit; title = m.title;
     digits = m.aggregation === "sum" && m.unit === "count" ? 0 : 1;
     goal = {step_count: state.profile.goals?.steps, exercise_time: state.profile.goals?.exercise_min, body_mass: state.profile.goals?.weight_kg}[t.metric];
   }
