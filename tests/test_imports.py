@@ -397,3 +397,29 @@ def test_hae_csv_medications(settings, tmp_path, client):
     recs = client.get("/api/v1/records", params={"category": "medication"}).json()["records"]
     assert len(recs) == 1 and recs[0]["start"] == "2026-09-14T09:55:41+09:00"
     assert recs[0]["data"]["name"] == "维生素D" and recs[0]["data"]["dose"] == 1.0
+
+
+def test_percentages_and_metric_aliases(client, tmp_path):
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="zh_CN">
+ <Record type="HKQuantityTypeIdentifierWalkingAsymmetryPercentage" sourceName="iPhone" unit="%"
+   startDate="2026-11-01 09:00:00 +0900" endDate="2026-11-01 09:10:00 +0900" value="0.09"/>
+ <Record type="HKQuantityTypeIdentifierStairAscentSpeed" sourceName="Watch" unit="m/s"
+   startDate="2026-11-01 09:00:00 +0900" endDate="2026-11-01 09:01:00 +0900" value="0.4"/>
+</HealthData>"""
+    path = tmp_path / "export.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("apple_health_export/export.xml", xml)
+    assert run_import(client, path)["status"] == "done"
+    hae = {"data": {"metrics": [
+        {"name": "walking_asymmetry_percentage", "units": "%", "data": [
+            {"qty": 9, "date": "2026-11-02 12:00:00 +0900", "source": "iPhone"}]},
+        {"name": "stair_speed_up", "units": "m/s", "data": [
+            {"qty": 0.26, "date": "2026-11-02 13:00:00 +0900", "source": "Watch"}]}]}}
+    client.post("/api/v1/imports/health-auto-export", json=hae)
+    asym = client.get("/api/v1/samples", params={"metric": "walking_asymmetry_percentage"}).json()
+    assert sorted(s["value"] for s in asym["samples"]) == [9, 9]
+    stairs = client.get("/api/v1/samples", params={"metric": "stair_ascent_speed"}).json()
+    assert len(stairs["samples"]) == 2
+    titles = {m["name"]: m["title"] for m in client.get("/api/v1/metrics").json()["metrics"]}
+    assert titles["stair_ascent_speed"] == "上楼速度" and "stair_speed_up" not in titles

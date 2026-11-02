@@ -104,6 +104,8 @@ class _Importer:
                 self.stats["bad_values"] += 1
                 return
             suffix = t.removeprefix("HKQuantityTypeIdentifier")
+            if a.get("unit") == "%":
+                value *= 100  # the export writes every percentage as a fraction (0.97)
             self.sample(mx.from_hk(t), value, a.get("unit"), a,
                         aggregation=mx.guess_aggregation(mx.from_hk(t), suffix))
             return
