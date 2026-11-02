@@ -68,6 +68,9 @@ def cmd_import(args) -> None:
                   f" {stats['workouts']} workouts", end="", file=sys.stderr, flush=True)
         stats = apple_health.run(conn, path, "cli", settings.files_dir, progress)
         print(file=sys.stderr)
+    elif args.kind == "health-auto-export-csv":
+        from .importers import hae_csv
+        stats = hae_csv.run(conn, src, "cli")
     else:
         from .importers import health_auto_export
         stats = health_auto_export.run(conn, json.loads(src.read_text()), "cli",
@@ -163,7 +166,8 @@ def main(argv=None) -> None:
     t.set_defaults(func=cmd_token)
 
     i = sub.add_parser("import", help="import a file from this machine")
-    i.add_argument("kind", choices=["apple-health", "health-auto-export"])
+    i.add_argument("kind", choices=["apple-health", "health-auto-export", "health-auto-export-csv"],
+                   help="health-auto-export-csv reads the medication log from the app's CSV zip")
     i.add_argument("path")
     i.add_argument("--no-copy", action="store_true",
                    help="do not keep a copy of the original under the data directory")

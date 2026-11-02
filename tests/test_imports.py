@@ -379,3 +379,21 @@ def test_activity_type_names():
     assert activity_type("功能性力量训练") == "functional_strength_training"
     assert activity_type("Outdoor Walk") == "walking"
     assert activity_type("某种新运动") == "other"
+
+
+def test_hae_csv_medications(settings, tmp_path, client):
+    from lifeos.db import connect
+    from lifeos.importers import hae_csv
+    path = tmp_path / "hae.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Medications-2019-10-26-2026-11-02.csv",
+                   "﻿日期,预定日期,药物,昵称,剂量,计划剂量,单位,状态,已归档,编码\n"
+                   "2026-09-14 09:55:41 +0900,2026-09-14 09:55:00 +0900,维生素D,,1.0,1.0,count,已服用,否,\n"
+                   "2026-09-15 09:55:00 +0900,2026-09-15 09:55:00 +0900,维生素D,,1.0,1.0,count,未操作,否,\n")
+        z.writestr("HealthAutoExport-2019-10-26-2026-11-02.csv", "日期/时间,步数 (步)\n")
+    conn = connect(settings.db_path)
+    assert hae_csv.run(conn, path, "cli") == {"medications": 1, "medications_not_taken": 1}
+    assert hae_csv.run(conn, path, "cli")["medications"] == 1  # re-import updates in place
+    recs = client.get("/api/v1/records", params={"category": "medication"}).json()["records"]
+    assert len(recs) == 1 and recs[0]["start"] == "2026-09-14T09:55:41+09:00"
+    assert recs[0]["data"]["name"] == "维生素D" and recs[0]["data"]["dose"] == 1.0
