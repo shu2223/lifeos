@@ -17,6 +17,11 @@ SLEEP_STAGES = {"Awake": "sleep_awake", "Asleep": "sleep_asleep", "In Bed": "sle
 SLEEP_SUMMARY = {"asleep": "sleep_asleep", "core": "sleep_core", "deep": "sleep_deep",
                  "rem": "sleep_rem", "awake": "sleep_awake", "inBed": "sleep_in_bed"}
 POINT_KEYS = {"date", "qty", "source", "start", "end", "startDate", "endDate", "units"}
+# The app re-sends recent days on every run, and an hour or a night that was still in progress
+# last time comes back with a bigger number. A point is identified by (metric, source, start):
+# the newer value replaces the older one instead of being added to it.
+REPLACE_SQL = ("DELETE FROM samples WHERE metric = ? AND source = ? AND start_ts = ?"
+               " AND NOT (end_ts = ? AND value = ?)")
 
 
 def _date(s: str | None):
@@ -152,8 +157,13 @@ class _Importer:
                     self.workout(w)
             if self.rows:
                 before = self.conn.total_changes
+                self.conn.executemany(REPLACE_SQL, [(r[0], r[8], r[3], r[4], r[6])
+                                                    for r in self.rows])
+                replaced = self.conn.total_changes - before
+                before = self.conn.total_changes
                 self.conn.executemany(INSERT_SQL, self.rows)
-                self.stats["samples_added"] = self.conn.total_changes - before
+                self.stats["samples_added"] = self.conn.total_changes - before - replaced
+                self.stats["samples_updated"] = replaced
         for key, value in data.items():
             if key not in ("metrics", "workouts") and isinstance(value, list) and value:
                 self.stats["raw_only"][key] = len(value)

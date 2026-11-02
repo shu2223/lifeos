@@ -221,3 +221,23 @@ def test_reimport_keeps_user_edits_and_deletes(client):
     client.delete(f"/api/v1/records/{w['id']}")
     client.post("/api/v1/imports/health-auto-export", json=hae)
     assert client.get(f"/api/v1/records/{w['id']}").json()["deleted_at"] is not None
+
+
+def test_resent_period_replaces_partial_values(client):
+    def payload(steps, core_hours, sleep_end):
+        return {"data": {"metrics": [
+            {"name": "step_count", "units": "count", "data": [
+                {"qty": steps, "date": "2026-11-02 09:00:00 +0900", "source": "Apple Watch"}]},
+            {"name": "sleep_analysis", "units": "hr", "data": [
+                {"date": "2026-11-02 00:00:00 +0900", "core": core_hours,
+                 "sleepStart": "2026-11-01 23:30:00 +0900", "sleepEnd": sleep_end,
+                 "source": "Apple Watch"}]}]}}
+    first = client.post("/api/v1/imports/health-auto-export",
+                        json=payload(300, 2.0, "2026-11-02 03:00:00 +0900")).json()
+    assert first["samples_added"] == 2 and first["samples_updated"] == 0
+    second = client.post("/api/v1/imports/health-auto-export",
+                         json=payload(800, 4.0, "2026-11-02 06:45:00 +0900")).json()
+    assert second["samples_added"] == 0 and second["samples_updated"] == 2
+    day = client.get("/api/v1/summary/day", params={"date": "2026-11-02"}).json()
+    assert day["activity"]["steps"] == 800         # not 300 + 800
+    assert day["sleep"]["core_min"] == 240           # not 120 + 240
