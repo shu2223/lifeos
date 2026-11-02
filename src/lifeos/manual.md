@@ -288,6 +288,17 @@ What the imports produce:
   `sleep_in_bed`. They are dated by the morning you woke up.
 - Workouts become `workout` **records** with source `apple_health`. Routes are attached as GPX
   files.
+- With Health Auto Export's "Include Workout Metrics" option on, each workout also carries
+  **series**. These include heart rate during the workout and for the 2 minutes after it,
+  energy and distance per minute, steps, and cycling cadence, power and speed. They stay
+  attached to the workout and never count toward daily totals.
+  - Read them with `GET /records/{id}/series`. Add `?name=heart_rate` for one series, or
+    `?points=false` for statistics only.
+  - The headline numbers are already in the record's `data`: `avg_hr`, `max_hr`,
+    `hr_recovery_1min` and `hr_recovery_2min` (the drop in bpm after the workout ends),
+    `avg_speed_kmh` and `effort_score`.
+  - Workouts imported from the export file get their heart-rate curve from the watch's
+    heart-rate samples inside the workout window.
 - Activity rings become one `activity_summary` record per day.
 
 When iPhone and Watch both record the same thing, daily totals count each hour once, taking
@@ -309,6 +320,7 @@ All paths are under `{BASE}/api/v1`. **R** = read scope, **W** = write, **A** = 
 | POST `/records` · POST `/records/batch` | W | create; with `external_id`, update in place instead |
 | GET · PATCH · DELETE `/records/{id}` | R/W | read, merge-patch, soft-delete |
 | POST `/records/{id}/restore` | W | undo a delete |
+| GET `/records/{id}/series` | R | time series of a record: workout heart rate, recovery, cadence, power; `name`, `points=false` |
 | POST `/records/{id}/attachments` · GET `/attachments/{id}` | W/R | files |
 | GET `/metrics` · POST `/metrics` | R/W | metric catalog, declare a metric |
 | GET `/metrics/{name}/series` | R | `from`, `to`, `bucket=hour\|day\|week\|month` |

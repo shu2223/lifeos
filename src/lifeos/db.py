@@ -150,7 +150,23 @@ CREATE TABLE IF NOT EXISTS imports (
   finished_at TEXT
 );
 """
-SCHEMA_VERSION = 1
+# Each step upgrades a database from the previous version; new tables go here, not in SCHEMA.
+MIGRATIONS = {
+    2: """
+CREATE TABLE IF NOT EXISTS record_series (
+  record_id  TEXT NOT NULL REFERENCES records(id),
+  name       TEXT NOT NULL,
+  unit       TEXT NOT NULL DEFAULT '',
+  kind       TEXT NOT NULL CHECK (kind IN ('value', 'range', 'raw')),
+  points     TEXT NOT NULL,
+  stats      TEXT NOT NULL DEFAULT '{}',
+  source     TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (record_id, name)
+);
+""",
+}
+SCHEMA_VERSION = max(MIGRATIONS)
 
 _B32 = "0123456789abcdefghjkmnpqrstvwxyz"
 
@@ -188,7 +204,11 @@ def migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version < 1:
         conn.executescript(SCHEMA)
-        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        conn.execute("PRAGMA user_version=1")
+        version = 1
+    for target in sorted(v for v in MIGRATIONS if v > version):
+        conn.executescript(MIGRATIONS[target])
+        conn.execute(f"PRAGMA user_version={target}")
 
 
 def dumps(value) -> str:

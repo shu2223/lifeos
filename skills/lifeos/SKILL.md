@@ -49,6 +49,7 @@ Paths in the table are relative to `$LIFEOS_URL`.
 | `DELETE /records/{id}` | remove a record (it can be restored) |
 | `POST /samples` | numbers such as weight or water: `{"samples": [{"metric": "body_mass", "value": 61.8}]}` |
 | `GET /summary/day` | today's intake against goals, plus steps, sleep and workouts |
+| `GET /records/{id}/series` | a workout's heart-rate curve, recovery, cadence, power (`?points=false` for stats only) |
 
 ## How to behave
 

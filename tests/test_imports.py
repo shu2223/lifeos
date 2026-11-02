@@ -241,3 +241,102 @@ def test_resent_period_replaces_partial_values(client):
     day = client.get("/api/v1/summary/day", params={"date": "2026-11-02"}).json()
     assert day["activity"]["steps"] == 800         # not 300 + 800
     assert day["sleep"]["core_min"] == 240           # not 120 + 240
+
+
+def _workout_with_metrics(hr_end=150):
+    t = "2026-11-03 07:{:02d}:00 +0900"
+    return {"data": {"workouts": [{
+        "id": "w-1", "name": "Outdoor Run", "start": t.format(0), "end": t.format(30),
+        "duration": 1800, "location": "Outdoor", "isIndoor": False,
+        "activeEnergyBurned": {"qty": 300, "units": "kcal"},
+        "distance": {"qty": 3.1, "units": "mi"},
+        "avgSpeed": {"qty": 6.2, "units": "mi/hr"},
+        "temperature": {"qty": 68, "units": "degF"},
+        "intensity": {"qty": 8.5, "units": "kcal/hr·kg"},
+        "effortScore": {"qty": 6, "units": "appleEffortScore"},
+        "stepCadence": {"qty": 170, "units": "count/min"},
+        "flightsClimbed": {"qty": 3, "units": "count"},
+        "lapLength": {"qty": 0.25, "units": "mi"},
+        "weirdThing": {"qty": 1, "units": "zz"},
+        "strokeStyle": "Unknown",
+        "metadata": {"HKAverageMETs": "8.1"},
+        "heartRateData": [
+            {"date": t.format(0), "Min": 90, "Avg": 110, "Max": 120, "units": "count/min"},
+            {"date": t.format(29), "Min": 140, "Avg": hr_end, "Max": 160, "units": "count/min"}],
+        "heartRateRecovery": [
+            {"date": t.format(31), "Min": 120, "Avg": 125, "Max": 130, "units": "count/min"},
+            {"date": t.format(32), "Min": 100, "Avg": 105, "Max": 110, "units": "count/min"}],
+        "activeEnergy": [{"date": t.format(0), "qty": 41.84, "units": "kJ"},
+                         {"date": t.format(1), "qty": 12, "units": "kcal"}],
+        "walkingAndRunningDistance": [{"date": t.format(0), "qty": 0.5, "units": "mi"}],
+        "stepCount": [{"date": t.format(0), "qty": 2500, "units": "count"},
+                      {"date": t.format(15), "qty": 2600, "units": "count"}],
+        "laps": [{"index": 1, "duration": 600}, {"index": 2, "duration": 610}],
+    }]}}
+
+
+def test_workout_metrics(client):
+    r = client.post("/api/v1/imports/health-auto-export", json=_workout_with_metrics()).json()
+    assert r["workouts"] == 1 and r["series"] == 6 and r["samples_added"] == 0
+    rec = client.get("/api/v1/records", params={"category": "workout"}).json()["records"][0]
+    d = rec["data"]
+    assert d["distance_km"] == 4.99 and d["avg_speed_kmh"] == 9.98
+    assert d["temperature_c"] == 20 and d["intensity"] == 8.5 and d["effort_score"] == 6
+    assert d["step_cadence"] == 170 and d["flights_climbed"] == 3 and d["lap_length_m"] == 402.34
+    assert d["avg_hr"] == 130 and d["max_hr"] == 160 and d["min_hr"] == 90
+    assert d["hr_recovery_1min"] == 25 and d["hr_recovery_2min"] == 45
+    assert d["step_count"] == 5100
+    assert d["other_stats"] == {"weird_thing": {"value": 1, "unit": "zz"},
+                                "stroke_style": "Unknown"}
+    assert d["metadata"] == {"HKAverageMETs": "8.1"}
+
+    full = client.get(f"/api/v1/records/{rec['id']}").json()
+    assert {s["name"] for s in full["series"]} == {
+        "heart_rate", "heart_rate_recovery", "active_energy", "walking_running_distance",
+        "step_count", "laps"}
+    s = client.get(f"/api/v1/records/{rec['id']}/series").json()["series"]
+    by = {x["name"]: x for x in s}
+    assert by["heart_rate"]["kind"] == "range" and by["heart_rate"]["stats"]["max"] == 160
+    assert by["active_energy"]["points"] == [["2026-11-03T07:00:00+09:00", 10.0],
+                                             ["2026-11-03T07:01:00+09:00", 12]]
+    assert by["walking_running_distance"]["unit"] == "km"
+    assert by["walking_running_distance"]["points"][0][1] == 0.805
+    assert by["laps"]["kind"] == "raw" and by["laps"]["points"][1]["duration"] == 610
+    only = client.get(f"/api/v1/records/{rec['id']}/series",
+                      params={"name": "heart_rate", "points": False}).json()["series"]
+    assert len(only) == 1 and "points" not in only[0]
+
+    # Workout curves never leak into day totals.
+    day = client.get("/api/v1/summary/day", params={"date": "2026-11-03"}).json()
+    assert "steps" not in day["activity"] and "active_kcal" not in day["activity"]
+
+    # A re-sent workout replaces its curves.
+    r2 = client.post("/api/v1/imports/health-auto-export",
+                     json=_workout_with_metrics(hr_end=170)).json()
+    assert r2["workouts"] == 1
+    hr = client.get(f"/api/v1/records/{rec['id']}/series",
+                    params={"name": "heart_rate"}).json()["series"][0]
+    assert hr["points"][-1][2] == 170
+    after = client.get(f"/api/v1/records/{rec['id']}").json()["data"]
+    assert after["hr_recovery_1min"] == 45
+
+
+def test_export_workout_gets_heart_rate_from_samples(client, tmp_path):
+    run_import(client, make_zip(tmp_path / "export.zip"))
+    client.post("/api/v1/samples", json={"samples": [
+        {"metric": "heart_rate", "value": v, "start": f"2026-11-01T07:{m:02d}:00+09:00",
+         "source": "apple_health:Apple Watch"} for m, v in ((5, 140), (20, 160), (45, 90))]})
+    w = client.get("/api/v1/records", params={"category": "workout"}).json()["records"][0]
+    s = client.get(f"/api/v1/records/{w['id']}/series").json()["series"]
+    assert s[0]["name"] == "heart_rate" and s[0]["source"] == "samples"
+    assert [p[1] for p in s[0]["points"]] == [140, 160]   # 07:45 is after the workout
+
+
+def test_migrates_v1_database(tmp_path):
+    from lifeos.db import SCHEMA, connect, migrate
+    conn = connect(tmp_path / "old.db")
+    conn.executescript(SCHEMA)
+    conn.execute("PRAGMA user_version=1")
+    migrate(conn)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    conn.execute("SELECT * FROM record_series").fetchall()

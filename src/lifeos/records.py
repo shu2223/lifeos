@@ -10,6 +10,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from . import categories as cats
+from . import series
 from .db import dumps, loads, log_change, new_id, tx
 from .errors import ApiError, bad_request, not_found
 from .timeutil import iso, parse, utc_now
@@ -100,6 +101,7 @@ def get(conn, record_id: str, with_attachments: bool = True) -> dict:
     rec = _row(r)
     if with_attachments:
         rec["attachments"] = attachments_of(conn, record_id)
+        rec["series"] = series.listing(conn, record_id)
     return rec
 
 

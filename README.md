@@ -17,6 +17,7 @@ flowchart LR
 - **四种数据**
   - **记录（records）**：带时间的结构化事件。内置类别有饮食 `meal`、运动 `workout`、活动圆环 `activity_summary`、睡眠感受 `sleep`、心情 `mood`、日记 `journal`、用药 `medication`、身体状况 `symptom`、消费 `expense`。agent 可以随时用 JSON Schema 新建类别，比如读书、护肤、学习时长。
   - **样本（samples）**：数值时间序列，比如步数、心率、体重、饮水、睡眠分期，苹果健康的数据基本都在这里。
+  - **运动曲线（series）**：挂在某一条运动记录下面的数据，包括运动中和结束后两分钟的心率、每分钟的能量和距离、步数、骑行踏频和功率等，用 `GET /records/{id}/series` 读取。它们不计入全天统计，否则会和“健康指标”重复。心率恢复（结束后 1 分钟、2 分钟心率下降了多少）会直接算好，写进运动记录。
   - **食物库（foods）**：常吃的东西和它的营养数据。第二次吃同样的东西时，直接复用第一次的估算。
   - **个人资料（profile）**：身高、生日、目标、饮食禁忌、时区等。
 - **“我今天吃饭了”怎么变成一条完整记录**：agent 按说明书给每样食物估算克数、热量和三大营养素，标上 `estimated` 和 `confidence`，一次写入。服务端负责算出合计、按时间补上餐次、生成标题，然后返回今天的累计和剩余额度，agent 再用一句话跟你确认。说错了就 PATCH 修改，记重了就删除（删除可以恢复）。
@@ -65,7 +66,7 @@ install -d -m 700 /etc/lifeos && (umask 077; lifeos token create mini-pc > /etc/
 ## 苹果健康 / 苹果健身
 
 1. **历史数据**：iPhone 上打开“健康”，点头像，选“导出所有健康数据”，然后把 zip 传到小主机。可以用 scp 传过来后执行 `lifeos import apple-health`，也可以 `POST /api/v1/imports/apple-health`。60 万条样本大约 13 秒导入完，内存占用 60 MB 左右。
-2. **之后自动同步**：iPhone 上的 Health Auto Export App 选 REST API 自动化，格式选 JSON，运动数据选 Version 2，地址填 `https://yishuapp.com/life/api/v1/imports/health-auto-export`，Header 加 `Authorization: Bearer <token>`。聚合方式选“小时”，或者关闭 Summarize。按天汇总的数据和逐条的原始数据如果覆盖同一天，会重复计算。
+2. **之后自动同步**：iPhone 上的 Health Auto Export App 选 REST API 自动化，格式选 JSON，运动数据选 Version 2 并打开 Include Workout Metrics，地址填 `https://yishuapp.com/life/api/v1/imports/health-auto-export`，Header 加 `Authorization: Bearer <token>`。聚合方式选“小时”，或者关闭 Summarize。按天汇总的数据和逐条的原始数据如果覆盖同一天，会重复计算。
 
 ## 公网入口：yishuapp.com/life/
 

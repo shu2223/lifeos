@@ -16,7 +16,7 @@ from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import __version__, auth, foods, jobs, profile, records, samples, summary
+from . import __version__, auth, foods, jobs, profile, records, samples, series, summary
 from . import categories as cats
 from . import metrics as mx
 from .config import Settings, from_env
@@ -490,6 +490,16 @@ def api_router() -> APIRouter:
     @r.post("/records/{record_id}/restore", tags=["records"])
     def restore_record(record_id: str, conn: Db, actor: Writer):
         return {"record": records.set_deleted(conn, record_id, actor.name, False)}
+
+    @r.get("/records/{record_id}/series", tags=["records"],
+           summary="Time series of one record: workout heart rate, recovery, cadence, power")
+    def record_series(record_id: str, conn: Db, _: Reader,
+                      name: str | None = Query(None, description="e.g. heart_rate"),
+                      points: bool = Query(True, description="false: names and stats only")):
+        rec = records.get(conn, record_id, with_attachments=False)
+        return {"record_id": record_id,
+                "series": series.for_record(conn, rec, profile.timezone_of(conn), name=name,
+                                            with_points=points)}
 
     @r.post("/records/{record_id}/attachments", tags=["records"], status_code=201,
             summary="Attach a file (raw body, or multipart field 'file')")
