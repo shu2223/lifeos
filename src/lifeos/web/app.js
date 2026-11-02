@@ -100,7 +100,10 @@ const fmt = (n, digits = 0) => n == null || Number.isNaN(Number(n)) ? "—"
   : Number(n).toLocaleString("zh-CN", {maximumFractionDigits: digits});
 const parseDay = d => { const [y, m, dd] = d.split("-").map(Number); return new Date(Date.UTC(y, m - 1, dd)); };
 const shiftDay = (d, n) => { const t = parseDay(d); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
-const dayLabel = (d, week = true) => { const t = parseDay(d); return `${t.getUTCMonth() + 1}月${t.getUTCDate()}日` + (week ? ` 周${WEEK[t.getUTCDay()]}` : ""); };
+const dayLabel = (d, week = true) => {
+  const t = parseDay(d), year = state.today && d.slice(0, 4) !== state.today.slice(0, 4) ? `${t.getUTCFullYear()}年` : "";
+  return `${year}${t.getUTCMonth() + 1}月${t.getUTCDate()}日` + (week ? ` 周${WEEK[t.getUTCDay()]}` : "");
+};
 const shortDay = d => { const t = parseDay(d); return `${t.getUTCMonth() + 1}/${t.getUTCDate()}`; };
 const relDay = d => d === state.today ? "今天" : d === shiftDay(state.today, -1) ? "昨天" : dayLabel(d);
 const clock = iso => iso ? iso.slice(11, 16) : "";
