@@ -259,6 +259,161 @@ def test_goals_merge(client):
     assert "goals" not in prof.json()["profile"]
 
 
+def _energy_fixture(client):
+    """30 days of 2,000 kcal resting and 300 active burn before today, so with a 1,500 goal the
+    line sits at 1,500 − 2,300 = −800. Yesterday 1,600 eaten; today 2,000 eaten, 800 resting
+    and 200 active so far. Walks at 4.0, 5.0 and 4.5 kcal/min, 100 and 120 steps/min."""
+    from datetime import timedelta
+
+    from lifeos.timeutil import now, zone
+    today = now(zone("Asia/Tokyo")).date()
+    day = lambda n: (today - timedelta(days=n)).isoformat()  # noqa: E731
+    client.patch("/api/v1/profile", json={"goals": {"kcal": 1500}})
+    samples = []
+    for n in range(1, 31):
+        for metric, value in (("basal_energy", 2000), ("active_energy", 300)):
+            samples.append({"metric": metric, "value": value, "unit": "kcal",
+                            "start": f"{day(n)}T12:00:00+09:00"})
+    samples += [{"metric": "basal_energy", "value": 800, "unit": "kcal",
+                 "start": f"{day(0)}T00:00:00+09:00", "end": f"{day(0)}T10:00:00+09:00"},
+                {"metric": "active_energy", "value": 200, "unit": "kcal",
+                 "start": f"{day(0)}T09:00:00+09:00"}]
+    assert client.post("/api/v1/samples", json={"samples": samples}).json()["inserted"] == 62
+    for n, clock, kcal in ((1, "08:00", 1600), (0, "00:00", 2000)):  # today's is already past
+        client.post("/api/v1/records", json={"category": "meal", "start": f"{day(n)}T{clock}:00+09:00",
+                                             "data": {"items": [{"name": "饭", "kcal": kcal}]}})
+    for minutes, kcal, steps in ((30, 120, 3000), (20, 100, 2400), (10, 45, None)):
+        data = {"activity_type": "walking", "duration_min": minutes, "active_kcal": kcal}
+        if steps:
+            data["step_count"] = steps
+        client.post("/api/v1/records", json={"category": "workout", "data": data,
+                                             "start": f"{day(3)}T18:00:00+09:00"})
+    return day
+
+
+def test_energy_bar_today(client):
+    _energy_fixture(client)
+    assert client.get("/api/v1/summary/day").json()["energy"] == {
+        "logged": True, "intake_kcal": 2000, "basal_kcal": 800, "basal_expected_kcal": 2000,
+        "active_kcal": 200,
+        "carry_kcal": 100,  # yesterday ended at 1,600 − 2,300 = −700, 100 short of its line
+        "balance_kcal": 1100,  # 100 + 2,000 − 800 − 200
+        "balance_tonight_kcal": -100,  # 1,200 more resting burn to come before midnight
+        "average_burn_kcal": 2300, "target_kcal": -800, "over_target_kcal": 700,
+        "walk_kcal_per_min": 4.5, "walk_steps_per_min": 110,
+        "walk_minutes": 156, "walk_steps": 17100,  # 700 / 4.5 = 155.6 minutes × 110 steps
+        "final": False}
+
+
+def test_energy_bar_past_days(client):
+    day = _energy_fixture(client)
+    y = client.get("/api/v1/summary/day", params={"date": day(1)}).json()["energy"]
+    assert y["final"] is True and y["carry_kcal"] is None  # the day before it has no meals
+    assert (y["balance_kcal"], y["balance_tonight_kcal"], y["over_target_kcal"]) == (-700, -700, 100)
+    assert y["walk_minutes"] is None and y["walk_steps"] is None
+    blank = client.get("/api/v1/summary/day", params={"date": day(2)}).json()["energy"]
+    assert blank["logged"] is False and blank["intake_kcal"] is None
+    assert blank["balance_kcal"] is None and blank["over_target_kcal"] is None
+    assert (blank["basal_kcal"], blank["active_kcal"], blank["target_kcal"]) == (2000, 300, -800)
+    # a day whose resting burn never synced falls back to the 7-day average
+    gone = client.get("/api/v1/samples", params={"metric": "basal_energy", "from": day(1),
+                                                  "to": day(1)}).json()["samples"][0]
+    client.delete(f"/api/v1/samples/{gone['id']}")
+    y = client.get("/api/v1/summary/day", params={"date": day(1)}).json()["energy"]
+    assert (y["basal_kcal"], y["balance_kcal"]) == (2000, -700)
+
+
+def test_energy_meal_timed_later_today_counts_tonight_not_now(client):
+    from datetime import timedelta
+
+    from lifeos.timeutil import iso, now, zone
+    _energy_fixture(client)
+    t = now(zone("Asia/Tokyo"))
+    later = t + timedelta(hours=1)
+    if later.date() != t.date():
+        return  # nothing later today to log after 23:00
+    client.post("/api/v1/records", json={"category": "meal", "start": iso(later),
+                                         "data": {"items": [{"name": "晚饭", "kcal": 500}]}})
+    e = client.get("/api/v1/summary/day").json()["energy"]
+    assert (e["intake_kcal"], e["balance_kcal"]) == (2500, 1100)  # not eaten yet
+    assert (e["balance_tonight_kcal"], e["over_target_kcal"]) == (400, 1200)
+
+
+def test_energy_resting_top_up_falls_back_to_the_month(client):
+    from datetime import timedelta
+
+    from lifeos.timeutil import now, zone
+    day = lambda n: (now(zone("Asia/Tokyo")).date() - timedelta(days=n)).isoformat()  # noqa: E731
+    client.patch("/api/v1/profile", json={"goals": {"kcal": 1500}})
+    samples = [{"metric": m, "value": v, "unit": "kcal", "start": f"{day(n)}T12:00:00+09:00"}
+               for n in range(8, 31) for m, v in (("basal_energy", 2000), ("active_energy", 300))]
+    samples.append({"metric": "basal_energy", "value": 900, "unit": "kcal",
+                    "start": f"{day(0)}T00:00:00+09:00", "end": f"{day(0)}T11:00:00+09:00"})
+    client.post("/api/v1/samples", json={"samples": samples})
+    client.post("/api/v1/records", json={"category": "meal", "start": f"{day(0)}T00:00:00+09:00",
+                                         "data": {"items": [{"name": "饭", "kcal": 1500}]}})
+    e = client.get("/api/v1/summary/day").json()["energy"]
+    assert e["basal_expected_kcal"] == 2000  # no basal in the last week; the month's average
+    assert (e["balance_kcal"], e["balance_tonight_kcal"], e["over_target_kcal"]) == (600, -500, 300)
+    assert (e["walk_minutes"], e["walk_steps"]) == (75, 7500)  # default 4 kcal and 100 steps a minute
+
+
+def test_energy_needs_resting_burn_to_say_anything(client):
+    from datetime import timedelta
+
+    from lifeos.timeutil import now, zone
+    day = lambda n: (now(zone("Asia/Tokyo")).date() - timedelta(days=n)).isoformat()  # noqa: E731
+    client.patch("/api/v1/profile", json={"goals": {"kcal": 1500}})
+    client.post("/api/v1/samples", json={"samples": [
+        {"metric": "active_energy", "value": 300, "unit": "kcal", "start": f"{day(n)}T12:00:00+09:00"}
+        for n in range(0, 31)]})
+    client.post("/api/v1/records", json={"category": "meal", "start": f"{day(0)}T00:00:00+09:00",
+                                         "data": {"items": [{"name": "饭", "kcal": 1500}]}})
+    e = client.get("/api/v1/summary/day").json()["energy"]
+    assert e["logged"] is True and e["basal_expected_kcal"] is None
+    assert e["balance_kcal"] is None and e["balance_tonight_kcal"] is None
+    assert e["over_target_kcal"] is None and e["walk_minutes"] is None
+
+
+def test_walk_pace_comes_from_walks_of_five_minutes_or_more(client):
+    from datetime import timedelta
+
+    from lifeos.timeutil import now, zone
+    day = lambda n: (now(zone("Asia/Tokyo")).date() - timedelta(days=n)).isoformat()  # noqa: E731
+    walk = lambda d, minutes, kcal, steps: client.post("/api/v1/records", json={  # noqa: E731
+        "category": "workout", "start": f"{d}T18:00:00+09:00",
+        "data": {"activity_type": "walking", "duration_min": minutes, "active_kcal": kcal,
+                 "step_count": steps}})
+    for _ in range(10):
+        walk(day(10), 30, 180, 3600)  # 6 kcal and 120 steps a minute
+    for _ in range(30):
+        walk(day(1), 3, 9, 240)  # newer, but too short to say anything about pace
+    e = client.get("/api/v1/summary/day").json()["energy"]
+    assert (e["walk_kcal_per_min"], e["walk_steps_per_min"]) == (6.0, 120)
+
+
+def test_energy_carry_reaches_back_one_day(client):
+    day = _energy_fixture(client)
+    client.post("/api/v1/records", json={"category": "meal", "start": f"{day(2)}T08:00:00+09:00",
+                                         "data": {"items": [{"name": "饭", "kcal": 3000}]}})
+    y = client.get("/api/v1/summary/day", params={"date": day(1)}).json()["energy"]
+    assert y["carry_kcal"] == 1500  # 3,000 − 2,300 = +700 against a −800 line
+    assert client.get("/api/v1/summary/day").json()["energy"]["carry_kcal"] == 100  # not 1,600
+
+
+def test_energy_bar_goal_changes_the_line(client):
+    _energy_fixture(client)
+    client.patch("/api/v1/profile", json={"goals": {"kcal": None}})
+    e = client.get("/api/v1/summary/day").json()["energy"]
+    assert e["target_kcal"] is None and e["carry_kcal"] is None and e["over_target_kcal"] is None
+    assert e["balance_tonight_kcal"] == -200 and e["walk_minutes"] is None  # 2,000 − 2,000 − 200
+    client.patch("/api/v1/profile", json={"goals": {"kcal": 2500}})
+    e = client.get("/api/v1/summary/day").json()["energy"]
+    assert e["target_kcal"] == 200 and e["carry_kcal"] == -900  # yesterday −700 against +200
+    assert e["balance_tonight_kcal"] == -1100 and e["over_target_kcal"] == -1300  # room left
+    assert e["walk_minutes"] is None and e["walk_steps"] is None
+
+
 def test_attachments(client):
     rec = client.post("/api/v1/records", json=MEAL).json()["record"]
     r = client.post(f"/api/v1/records/{rec['id']}/attachments", params={"filename": "a.jpg"},

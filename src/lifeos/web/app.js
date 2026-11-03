@@ -436,15 +436,7 @@ async function viewDay(day) {
     dateInput, day !== state.today ? button("回到今天", () => go(state.today), "btn small") : null);
 
   const tiles = [];
-  const kcal = intake.kcal || 0, kGoal = goals.kcal;
-  const burned = sum.energy_balance.burned_kcal;
-  tiles.push(tile("摄入", fmt(kcal), "kcal",
-    kGoal ? (kcal <= kGoal ? `目标 ${fmt(kGoal)} · 还剩 ${fmt(kGoal - kcal)}` : `目标 ${fmt(kGoal)} · 超出 ${fmt(kcal - kGoal)}`)
-      : burned ? `消耗 ${fmt(burned)}` : "还没设热量目标", kGoal ? kcal / kGoal : null, true));
-  if (act.active_kcal != null) {
-    tiles.push(tile("活动消耗", fmt(act.active_kcal), "kcal", rings.move_goal_kcal ? `目标 ${fmt(rings.move_goal_kcal)}`
-      : act.basal_kcal ? `静息 ${fmt(act.basal_kcal)}` : null, rings.move_goal_kcal ? act.active_kcal / rings.move_goal_kcal : null));
-  }
+  const kcal = intake.kcal || 0;
   if (act.steps != null) {
     tiles.push(tile("步数", fmt(act.steps), "", [goals.steps && `目标 ${fmt(goals.steps)}`, act.distance_km && `${fmt(act.distance_km, 1)} km`]
       .filter(Boolean).join(" · "), goals.steps ? act.steps / goals.steps : null));
@@ -484,7 +476,7 @@ async function viewDay(day) {
   right.push(card("其他记录", null, others.length ? recordRows(others, {chip: true})
     : h("p", {class: "empty"}, "心情、日记、用药、症状、花销都会出现在这里。")));
 
-  return [daybar, day === state.today || sum.smoking ? smokingCard(day, sum.smoking) : null,
+  return [daybar, day === state.today || sum.smoking ? smokingCard(day, sum.smoking) : null, energyCard(day, sum),
     h("section", {class: "tiles", "aria-label": "当天概览"}, tiles),
     h("div", {class: "columns"}, h("div", {class: "stack"}, mealCard), h("div", {class: "stack"}, right))];
 }
@@ -558,6 +550,108 @@ function smokingCard(day, initial) {
   }
   draw();
   return host;
+}
+
+// The day's energy bar: eating pushes it right, resting and active burn pull it left. Its line
+// is the kcal goal minus an ordinary day's burn, so eating the goal on an ordinary day lands on it.
+const signed = n => (n > 0 ? "+" : n < 0 ? "−" : "") + fmt(Math.abs(n));
+const hourLabel = x => { const m = Math.round(x * 60); return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`; };
+function dayStartMs(day) {  // midnight of `day` in the profile timezone
+  const name = new Intl.DateTimeFormat("en-US", {timeZone: state.tz, timeZoneName: "longOffset"})
+    .formatToParts(new Date(day + "T12:00:00Z")).find(p => p.type === "timeZoneName")?.value || "GMT";
+  const m = name.match(/([+-]\d{2}):?(\d{2})?/);
+  return Date.parse(`${day}T00:00:00${m ? `${m[1]}:${m[2] || "00"}` : "Z"}`);
+}
+const burnText = e => [e.basal_kcal != null && `静息 ${fmt(e.basal_kcal)}`
+  + (!e.final && e.basal_expected_kcal ? `（全天约 ${fmt(e.basal_expected_kcal)}）` : ""), `活动 ${fmt(e.active_kcal)}`].filter(Boolean).join(" · ");
+
+function energyCard(day, sum) {
+  const e = sum.energy;
+  if (!e) return null;
+  const live = !e.final, which = live ? "今天" : "这天";
+  const head = (...aside) => h("div", {class: "card-head"}, h("h2", null, live ? "今日热量" : "热量"), aside.length ? h("span", {class: "muted"}, aside) : null);
+  if (!e.logged || e.balance_kcal == null) {
+    return h("section", {class: "card energy"}, head(),
+      h("p", {class: "empty"}, !e.logged ? `${which}没记饮食，算不出收支。对 agent 说一句“我中午吃了……”就会算上。`
+        : "还没有消耗数据，Apple 健康同步之后才算得出来。"),
+      h("p", {class: "muted small"}, `消耗：${burnText(e)}`));
+  }
+  const c = e.carry_kcal, prev = live ? "昨天" : "前一天";
+  const carry = c == null ? null : c === 0 ? `${prev}正好在目标线上`
+    : c < 0 ? `${prev}比目标多减了 ${fmt(-c)}，${which}从 −${fmt(-c)} 开始` : `${prev}离目标差 ${fmt(c)}，${which}从 +${fmt(c)} 开始`;
+  const b = e.balance_kcal, end = live ? e.balance_tonight_kcal : b, t = e.target_kcal;
+  const R = Math.max(Math.abs(b), Math.abs(end ?? b), Math.abs(t ?? 0), 300) * 1.3, pos = x => 50 + x / R * 50;
+  const zone = t != null && b <= t ? "good" : b <= 0 ? "under" : "over";
+  const tonight = live && end != null;
+  const bar = h("div", {class: "ebar", role: "img", "aria-label": `${live ? "现在" : "全天"} ${signed(b)} kcal`
+    + (t != null ? `，目标线 ${signed(t)}` : "") + (tonight ? `，到今晚预计 ${signed(end)}` : "")},
+    h("span", {class: "edge left"}, "在减"), h("span", {class: "edge right"}, "在长"),
+    h("span", {class: "fill " + zone, style: {left: Math.min(50, pos(b)) + "%", width: Math.abs(pos(b) - 50) + "%"}}),
+    h("span", {class: "tick", style: {left: "50%"}}),
+    t != null && Math.abs(pos(t) - 50) < 8 ? null : h("span", {class: "lab", style: {left: "50%"}}, "维持"),
+    t != null ? [h("span", {class: "tick target", style: {left: pos(t) + "%"}}), h("span", {class: "lab", style: {left: pos(t) + "%"}}, "目标")] : null,
+    tonight ? [h("span", {class: "tick tonight", style: {left: pos(end) + "%"}}), h("span", {class: "lab up", style: {left: pos(end) + "%"}}, "今晚")] : null);
+  const over = e.over_target_kcal;
+  let note;
+  if (t == null) note = sum.goals?.kcal == null ? "在“设置”里填每天的热量目标，就会画出目标线。" : "还没有过去 30 天的消耗数据，暂时画不出目标线。";
+  else if (over == null) note = "缺少静息消耗的数据，还估不出今晚会落在哪。";
+  else if (live) {
+    note = over > 0 && e.walk_minutes >= 1 ? `回到目标线约要走 ${hm(e.walk_minutes)}（约 ${fmt(e.walk_steps)} 步）；每走 30 分钟往回扣约 ${fmt(30 * e.walk_kcal_per_min)}。`
+      : over > 0 ? "今晚基本落在目标线上。" : over === 0 ? "今晚正好落在目标线上。" : `今晚会落在目标线以下，还能再吃约 ${fmt(-over)} kcal。`;
+  } else {
+    note = (over === 0 ? "这天正好落在目标线上" : over > 0 ? `这天比目标线多了 ${fmt(over)} kcal` : `这天比目标线还多减了 ${fmt(-over)} kcal`)
+      + (c ? `（含前一天带进的 ${signed(c)}）` : "") + "。";
+  }
+  const detail = h("div", {class: "dialog-stack"});
+  const more = h("details", {class: "energy-more", ontoggle: () => { if (more.open && !detail.childElementCount) energyDetail(detail, day); }},
+    h("summary", null, "一天的变化"), detail);
+  return h("section", {class: "card energy"}, carry ? head(carry) : head(),
+    h("div", {class: "energy-main"},
+      h("span", null, h("span", {class: "muted small"}, live ? "现在 " : "全天 "), h("span", {class: "value"}, signed(b)), h("span", {class: "unit"}, "kcal")),
+      h("span", {class: "muted small"}, [tonight && `到今晚预计 ${signed(end)}`, t != null && `目标线 ${signed(t)}`].filter(Boolean).join(" · "))),
+    bar, h("p", {class: "note"}, note), more);
+}
+
+// The day's balance hour by hour: meals step it up, each hour's resting and active burn bring it down.
+// It reads the day afresh, since the card may be older than the latest sync, and places everything by
+// time since midnight in the profile timezone, so a meal logged at +08:00 on a trip lines up too.
+async function energyDetail(host, day) {
+  host.replaceChildren(h("p", {class: "muted small"}, "正在读取…"));
+  let sum, basal, active;
+  try {
+    [sum, basal, active] = await Promise.all([api("/summary/day?date=" + day), ...["basal_energy", "active_energy"].map(m =>
+      api(`/metrics/${m}/series?` + q({from: day, to: day, bucket: "hour"})).then(r => r.points).catch(() => []))]);
+  } catch (err) { host.replaceChildren(h("p", {class: "bad"}, err.message)); return; }
+  const e = sum.energy;
+  if (!e?.logged || e.balance_kcal == null) { host.replaceChildren(h("p", {class: "muted small"}, "这天的数据不够画曲线。")); return; }
+  const live = !e.final, start = dayStartMs(day), hoursIn = iso => Math.min(24, Math.max(0, (Date.parse(iso) - start) / 3.6e6));
+  const B = Array(24).fill(0), A = Array(24).fill(0);
+  for (const [arr, pts] of [[B, basal], [A, active]]) for (const p of pts) arr[Math.min(23, Math.floor(hoursIn(p.bucket)))] += p.value;
+  const unsynced = (e.basal_kcal || 0) - B.reduce((s, v) => s + v, 0);
+  if (!live && unsynced > 1) B.forEach((_, i) => { B[i] += unsynced / 24; });  // a day the average stood in for
+  const nowH = live ? hoursIn(new Date().toISOString()) : 24;
+  const lastH = Math.max(-1, ...[...B.keys()].filter(i => B[i] || A[i]));
+  const span = i => live && i === lastH ? Math.max(0.05, Math.min(1, nowH - lastH)) : 1;  // the hour still being synced
+  const cum = (arr, x) => arr.reduce((s, v, i) => s + v * Math.min(1, Math.max(0, (x - i) / span(i))), 0);
+  const meals = sum.nutrition.meals.map(m => ({x: hoursIn(m.start), kcal: m.kcal || 0}));
+  const at = x => (e.carry_kcal || 0) + meals.reduce((s, m) => s + (m.x <= x ? m.kcal : 0), 0) - cum(B, x) - cum(A, x);
+  const xs = [nowH];
+  for (let x = 0; x < nowH; x += 0.25) xs.push(x);
+  for (const m of meals) if (m.x < nowH) xs.push(Math.max(0, m.x - 0.01), m.x);
+  const solid = [...new Set(xs)].sort((a, b) => a - b).map(x => ({x, y: Math.round(at(x))}));
+  solid[solid.length - 1].y = e.balance_kcal;  // end on the card's own number
+  const series = [{label: "收支", color: "var(--series-1)", points: solid}];
+  if (live && e.balance_tonight_kcal != null) {
+    series.push({label: "预计", color: "var(--muted)", points: [{x: nowH, y: e.balance_kcal}, {x: 24, y: e.balance_tonight_kcal}]});
+  }
+  const plot = chart(el => lineChart(el, {label: "一天里的热量收支", unit: "kcal", yFmt: signed, zero: true, goal: e.target_kcal ?? null,
+    xFmt: x => `${String(x).padStart(2, "0")}:00`, xTicks: [0, 6, 12, 18, 24], xTip: hourLabel, series, height: 180}));
+  const byMeal = {};
+  for (const m of sum.nutrition.meals) byMeal[m.meal_type] = (byMeal[m.meal_type] || 0) + (m.kcal || 0);
+  fill(host, plot,
+    series.length > 1 ? h("p", {class: "muted small"}, "蓝线是已经发生的，灰线是之后不再吃也不再动的话到今晚的走向。") : null,
+    h("p", {class: "small"}, `吃进 ${fmt(e.intake_kcal)}（${Object.entries(byMeal).map(([k, v]) => `${MEAL[k] || "饮食"} ${fmt(v)}`).join(" · ")}）`),
+    h("p", {class: "small"}, `消耗 ${burnText(e)}` + (e.carry_kcal ? ` · ${live ? "昨天" : "前一天"}带进 ${signed(e.carry_kcal)}` : "")));
 }
 
 const workoutName = d => (ACTIVITY[d.activity_type] && d.activity_type !== "other" ? ACTIVITY[d.activity_type] : d.activity_name || "运动")

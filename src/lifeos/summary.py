@@ -1,5 +1,6 @@
 """Daily and multi-day views that answer "how am I doing today" in one request."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from statistics import median
 
 from . import profile, records, samples
 from .categories import NUTRIENTS
@@ -30,6 +31,7 @@ SLEEP_METRICS = {"in_bed_min": "sleep_in_bed", "asleep_unstaged_min": "sleep_asl
                  "awake_min": "sleep_awake"}
 MAX_RANGE_DAYS = 400
 WHOLE = {"steps", "flights_climbed", "stand_hours"}  # summed from fractional hourly values
+WALK_DEFAULT = (4.0, 100.0)  # kcal and steps per minute of walking until a walk is recorded
 
 
 def _shown(key: str, value: float) -> float:
@@ -102,6 +104,96 @@ def _smoking(conn, d: str, recs: list[dict], goals: dict) -> dict | None:
     }
 
 
+def _int(v: float | None) -> int | None:
+    return None if v is None else round(v)
+
+
+def _walk_rate(conn) -> tuple[float, float]:
+    """Median kcal and steps per minute over the 30 latest walks of five minutes or more."""
+    kcal, steps = [], []
+    for r in conn.execute("SELECT data FROM records WHERE category = 'workout'"
+                          " AND deleted_at IS NULL"
+                          " AND json_extract(data, '$.activity_type') = 'walking'"
+                          " AND json_extract(data, '$.duration_min') >= 5"
+                          " AND json_extract(data, '$.active_kcal') > 0"
+                          " ORDER BY start_ts DESC LIMIT 30"):
+        w = loads(r["data"])
+        kcal.append(w["active_kcal"] / w["duration_min"])
+        if w.get("step_count"):
+            steps.append(w["step_count"] / w["duration_min"])
+    return (median(kcal) if kcal else WALK_DEFAULT[0],
+            median(steps) if steps else WALK_DEFAULT[1])
+
+
+def _eaten(conn, d: str) -> float | None:
+    """A day's eaten kcal, or None when no meal was logged that day."""
+    r = conn.execute("SELECT COUNT(*) AS n, SUM(json_extract(data, '$.totals.kcal')) AS kcal"
+                     " FROM records WHERE category = 'meal' AND deleted_at IS NULL"
+                     " AND local_date = ?", (d,)).fetchone()
+    return (r["kcal"] or 0) if r["n"] else None
+
+
+def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) -> dict:
+    """The day's energy bar: eaten minus resting and active burn. Its line is the kcal goal minus
+    the average daily burn of the 30 days before, so eating the goal on an ordinary day lands on
+    it. Today, resting burn still to come is added up to the 7-day average (the month's when the
+    week has none), and `later` kcal of meals timed after now count tonight but not yet now;
+    activity is not guessed. Yesterday's distance from its own line carries into today, nothing
+    older does."""
+    day = date.fromisoformat(d)
+    lo = (day - timedelta(days=31)).isoformat()
+    basal = {k: v["value"] for k, v in _metric_days(conn, "basal_energy", lo, d).items()}
+    active = {k: v["value"] for k, v in _metric_days(conn, "active_energy", lo, d).items()}
+
+    def before(x: date, n: int) -> list[str]:
+        return [(x - timedelta(days=i)).isoformat() for i in range(1, n + 1)]
+
+    def line(x: date) -> tuple[float | None, float | None]:
+        burns = [basal[k] + active[k] for k in before(x, 30) if k in basal and k in active]
+        avg = sum(burns) / len(burns) if burns else None
+        ok = avg is not None and isinstance(goal, (int, float))
+        return avg, goal - avg if ok else None
+
+    def expected(x: date) -> float | None:
+        for n in (7, 30):  # the last week, or the month when the week has no resting burn
+            vals = [basal[k] for k in before(x, n) if k in basal]
+            if vals:
+                return sum(vals) / len(vals)
+        return None
+
+    is_today = day == today
+    exp = expected(day)
+    b = basal.get(d) if is_today else basal.get(d, exp)
+    a = active.get(d, 0)
+    avg, target = line(day)
+    yday = day - timedelta(days=1)
+    y_eaten, y_basal = _eaten(conn, yday.isoformat()), basal.get(yday.isoformat(), expected(yday))
+    y_target = line(yday)[1]
+    carry = (y_eaten - y_basal - active.get(yday.isoformat(), 0) - y_target
+             if None not in (y_eaten, y_basal, y_target) else None)
+    balance = tonight = None
+    if eaten is not None and (b is not None or (is_today and exp is not None)):
+        balance = (carry or 0) + eaten - later - (b or 0) - a
+        if not is_today:
+            tonight = balance
+        elif exp is not None:
+            tonight = balance + later - max(0, exp - (b or 0))
+    over = tonight - target if None not in (tonight, target) else None
+    kpm, spm = _walk_rate(conn)
+    walk = over / kpm if is_today and over is not None and over > 0 else None
+    return {
+        "logged": eaten is not None, "intake_kcal": _int(eaten),
+        "basal_kcal": _int(b), "basal_expected_kcal": _int(exp), "active_kcal": _int(a),
+        "carry_kcal": _int(carry), "balance_kcal": _int(balance),
+        "balance_tonight_kcal": _int(tonight), "average_burn_kcal": _int(avg),
+        "target_kcal": _int(target), "over_target_kcal": _int(over),
+        "walk_kcal_per_min": round(kpm, 2), "walk_steps_per_min": round(spm),
+        "walk_minutes": _int(walk),
+        "walk_steps": None if walk is None else int(round(walk * spm, -2)),
+        "final": not is_today,
+    }
+
+
 def _sum_nutrients(meals: list[dict]) -> dict:
     totals: dict[str, float] = {}
     for m in meals:
@@ -131,6 +223,9 @@ def day(conn, d: str) -> dict:
     burned = (activity.get("active_kcal") or 0) + (activity.get("basal_kcal") or 0)
     remaining = {k: round(goals[k] - intake.get(k, 0), 1) for k in NUTRIENTS
                  if isinstance(goals.get(k), (int, float))}
+    moment = now(profile.timezone_of(conn))
+    later = sum((m["data"].get("totals") or {}).get("kcal", 0) for m in meals
+                if datetime.fromisoformat(m["start"]) > moment) if d == moment.date().isoformat() else 0
     return {
         "date": d,
         "timezone": prof.get("timezone"),
@@ -149,6 +244,9 @@ def day(conn, d: str) -> dict:
             "burned_kcal": round(burned) if burned else None,
             "net_kcal": round(intake.get("kcal", 0) - burned) if burned else None,
         },
+        "energy": _energy(conn, d, intake.get("kcal", 0) if meals else None, later, goals.get("kcal"),
+                          moment.date())
+        if date.fromisoformat(d) > date.min + timedelta(days=40) else None,  # needs 31 days before
         "sleep": _sleep(conn, d, d).get(d),
         "workouts": [{"id": r["id"], "start": r["start"], "end": r["end"], "title": r["title"],
                       **{k: r["data"].get(k) for k in ("activity_type", "duration_min",

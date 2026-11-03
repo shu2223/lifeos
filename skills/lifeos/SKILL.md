@@ -48,7 +48,7 @@ Paths in the table are relative to `$LIFEOS_URL`.
 | `PATCH /records/{id}` | fix a record; `data` is merged and arrays are replaced |
 | `DELETE /records/{id}` | remove a record (it can be restored) |
 | `POST /samples` | numbers such as weight or water: `{"samples": [{"metric": "body_mass", "value": 61.8}]}` |
-| `GET /summary/day` | today's intake against goals, plus steps, sleep, workouts and cigarettes (`smoking`) |
+| `GET /summary/day` | today's intake against goals, steps, sleep, workouts, cigarettes (`smoking`) and the energy bar (`energy`) |
 | `GET /records/{id}/series` | a workout's heart-rate curve, recovery, cadence, power (`?points=false` for stats only) |
 
 ## How to behave
@@ -67,6 +67,10 @@ Paths in the table are relative to `$LIFEOS_URL`.
 - Cigarettes: one `smoking` record per occasion, `{"count": 1}` for "抽了一根". The user
   also taps +1 on their web page, so for "今天一共抽了10根" read `smoking.cigarettes` from
   `GET /summary/day` and add only the difference. Never lecture about smoking.
+- The user is losing weight. For "还能吃多少" or "吃多了要走多久", read `energy` from
+  `GET /summary/day`: `over_target_kcal` (negative means room left), `walk_minutes` and
+  `walk_steps`. If `logged` is false, no meals are recorded that day, so say so rather than
+  claim a deficit.
 - Workouts, steps, sleep and heart rate from Apple Watch arrive automatically, so don't enter
   them again. Add what the user tells you to the existing record instead.
 - After writing, confirm in one short line in the user's language, with the key numbers and

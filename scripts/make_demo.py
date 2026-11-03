@@ -59,7 +59,7 @@ def main() -> None:
     if conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]:
         raise SystemExit(f"{settings.home} already has records; use an empty LIFEOS_HOME")
     profile.patch(conn, {"name": "示例", "height_cm": 170, "timezone": "Asia/Tokyo", "currency": "JPY",
-                         "goals": {"kcal": 2100, "protein_g": 110, "fat_g": 65, "carbs_g": 250,
+                         "goals": {"kcal": 1800, "protein_g": 110, "fat_g": 65, "carbs_g": 250,
                                    "steps": 8000, "exercise_min": 30, "sleep_hours": 7.5,
                                    "cigarettes_max": 6}}, "demo")
     tz = profile.timezone_of(conn)
@@ -108,6 +108,10 @@ def main() -> None:
                 sample("heart_rate", round(rng.uniform(66, 84) - 4 * fitness), start, unit="count/min")
                 if h < 19 and rng.random() < 0.8:
                     sample("stand_hour", 1, start, start + timedelta(minutes=59), "count")
+            for h in (*range(7), 23):  # resting burn goes on through the night too
+                start = at(day, h, 0, tz)
+                if start <= today:
+                    sample("basal_energy", 64.0, start, start + timedelta(minutes=59), "kcal")
             sample("resting_heart_rate", round(rng.uniform(56, 60) - 3 * fitness), at(day, 7, 0, tz),
                    unit="count/min")
             sample("heart_rate_variability", round(rng.uniform(42, 55) + 6 * fitness, 1), at(day, 3, 0, tz),

@@ -196,6 +196,29 @@ svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-widt
   box-shadow: inset 0 0 0 1px var(--border); cursor: pointer; font-variant-numeric: tabular-nums; }
 .smoke-times button:hover { background: var(--wash); }
 
+/* Energy: eating pushes the bar right, resting and active burn pull it left; green line = goal */
+.energy { display: grid; gap: 4px; }
+.energy .card-head { margin-bottom: 4px; }
+.energy-main { display: flex; justify-content: space-between; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; }
+.energy-main .value { font-size: 26px; line-height: 1.15; font-weight: 600; font-variant-numeric: tabular-nums; }
+.energy-main .unit { font-size: 13px; color: var(--muted); margin-left: 3px; }
+.ebar { position: relative; height: 16px; border-radius: 4px; background: var(--track); margin: 24px 0 24px; }
+.ebar .fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.ebar .fill.over { background: var(--serious); }
+.ebar .fill.under { background: var(--accent); }
+.ebar .fill.good { background: var(--good); }
+.ebar .tick { position: absolute; top: -5px; bottom: -5px; width: 2px; margin-left: -1px; background: var(--ink); }
+.ebar .tick.target { background: var(--good); }
+.ebar .tick.tonight { width: 0; background: none; border-left: 2px dashed var(--muted); }
+.ebar .lab { position: absolute; top: 20px; font-size: 11px; color: var(--muted); white-space: nowrap; transform: translateX(-50%); }
+.ebar .lab.up { top: -20px; }
+.ebar .edge { position: absolute; top: 0; line-height: 16px; font-size: 11px; color: var(--muted); }
+.ebar .edge.left { left: 6px; }
+.ebar .edge.right { right: 6px; }
+.energy .note { color: var(--ink-2); }
+.energy-more > summary { font-size: 12px; }
+.energy-more[open] > summary { margin-bottom: 4px; }
+
 /* Macros */
 .macros { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .macro { display: grid; gap: 4px; }

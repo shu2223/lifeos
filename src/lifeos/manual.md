@@ -43,7 +43,8 @@ using.
 - `profile`: name, height, goals, diet preferences and allergies.
 - `categories`: what kinds of records exist.
 - `metrics_with_data`: which numeric series exist.
-- `today_summary`: meals so far, intake against goals, steps, sleep, workouts and cigarettes.
+- `today_summary`: meals so far, intake against goals, steps, sleep, workouts, cigarettes and
+  the energy bar (`energy`, see §6.8).
 - `frequent_foods`: the user's food library, most-used first.
 - `recent_records`: the last 10 entries, which helps you avoid writing duplicates.
 
@@ -265,7 +266,8 @@ Write the `description` for the next agent that will use it. Names are snake_cas
 
 | Question | Call |
 |---|---|
-| 今天吃了多少 / 还能吃多少 | `GET /summary/day` (default today), then read `nutrition.intake`, `nutrition.remaining` and `energy_balance` |
+| 今天吃了多少 | `GET /summary/day` (default today), then `nutrition.intake` |
+| 还能吃多少 / 吃多了要走多久 | `GET /summary/day`, then `energy` (below) |
 | 这周 / 这个月怎么样 | `GET /summary/days?from=2026-10-27&to=2026-11-02` |
 | 今天抽了几根 / 这周抽了多少 | `GET /summary/day`, then `smoking`; for a range, `cigarettes` in each row of `GET /summary/days` |
 | a trend in one metric | `GET /metrics/step_count/series?from=…&to=…&bucket=day\|week\|month\|hour` |
@@ -273,6 +275,30 @@ Write the `description` for the next agent that will use it. Names are snake_cas
 | everything on one day | `GET /records?date=2026-11-01&order=asc` |
 
 Lists return `next_cursor` when there is more. Pass it back as `cursor` to get the next page.
+
+**The energy bar.** The owner is losing weight and tracks it as one bar: everything eaten pushes
+it up, and resting and active burn both pull it down. `energy` in `/summary/day` holds it:
+
+- `balance_kcal`: eaten − resting − active so far, plus `carry_kcal`. A meal timed later today
+  counts tonight, not yet now. `carry_kcal` is yesterday's own eaten − burn against its own
+  line, without what carried into yesterday, so nothing older carries over.
+- `balance_tonight_kcal`: where the bar ends at midnight if nothing more is eaten or done.
+  The resting burn still to come is added up to `basal_expected_kcal` (the 7-day average, or
+  the 30-day one when the week has none); activity is not guessed. On past days it is the
+  final value. It is null when there is no resting-burn history to estimate from.
+- `target_kcal`: the line, `goals.kcal` minus `average_burn_kcal` (the average daily burn over
+  the 30 days before). Eating the goal on an ordinary day lands on it. It is null when
+  `goals.kcal` is not set or none of those 30 days has burn data.
+- `over_target_kcal`: tonight minus the line. Positive means over by that much; negative means
+  that much room is left to eat. Today, `walk_minutes` and `walk_steps` are the walking that
+  would bring tonight back to the line, at the owner's own pace from their recent walks
+  (`walk_kcal_per_min`, `walk_steps_per_min`). A past day's `over_target_kcal` already
+  includes its `carry_kcal`; to total several days, add up `over_target_kcal − carry_kcal`.
+- `logged: false` means no meal was recorded that day, so the balance is unknown. Say that
+  instead of reporting a big deficit.
+
+Answer "还能吃多少" or "要走多久" from these numbers, for example "今晚预计 +50，比目标线高
+857，要抵掉约走 3 小时 24 分（约 19,500 步）". Don't lecture.
 
 ### 6.9 Photos and files
 
@@ -296,8 +322,8 @@ PATCH {BASE}/api/v1/profile
 ```
 
 `null` deletes a key. `goals` merges one level down: send only the goals you change, and a goal
-set to `null` is removed; the others stay. `goals.cigarettes_max` is a daily cap on cigarettes,
-not a target to reach. The `timezone` key drives every day boundary. Change it when the user
+set to `null` is removed; the others stay. `goals.kcal` also sets the energy bar's line (§6.8).
+`goals.cigarettes_max` is a daily cap on cigarettes, not a target to reach. The `timezone` key drives every day boundary. Change it when the user
 moves, not for short trips: times with an explicit offset already land on the right local day.
 
 ## 7. Apple Health and Apple Fitness
