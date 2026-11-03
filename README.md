@@ -62,6 +62,8 @@ LIFEOS_HOME=/tmp/lifeos-demo .venv/bin/lifeos serve --port 8780
 
 网页受 Cloudflare Access 保护，只有你本人能打开。它的接口走 `/life/web/api/v1`，同样受 Access 保护，所以不需要 token；写操作还会检查请求是否来自 `https://yishuapp.com`。给 agent 用的 `/life/api/v1` 照旧靠 token。在小主机本机打开可以用 `http://127.0.0.1:8773/#token=<token>`。
 
+更新上线以后，开着的页面在你切回来时会自己检查有没有新版本，日期变了也一样，有就自动刷新；如果正开着对话框或者在打字，只提示一句，不打断。页面里的程序文件地址带着版本号，所以刷新后一定拿到对应的新文件。
+
 ## 今日热量
 
 一根收支条：吃进去往右加，静息和活动消耗往左扣，中间是维持体重。

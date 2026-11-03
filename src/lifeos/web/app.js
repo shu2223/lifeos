@@ -1255,8 +1255,30 @@ async function loadContext() {
   issues(warn);
 }
 
+// A tab opened before a deploy, or on an earlier day, reloads itself when you come back to it.
+// While a dialog is open or something is being typed it only says so, to keep what is there.
+const VERSION = document.querySelector('meta[name="lifeos-version"]')?.content;
+let lastCheck = Date.now();
+async function checkForUpdate() {
+  if (document.visibilityState !== "visible" || Date.now() - lastCheck < 30000) return;
+  lastCheck = Date.now();
+  let current = null;
+  try {
+    const res = await fetch(BASE + "/version", {cache: "no-store", credentials: "same-origin"});
+    if (res.ok) current = (await res.json()).web;
+  } catch { return; }
+  const newVersion = current && VERSION && current !== VERSION;
+  const newDay = state.today && nowLocal().slice(0, 10) !== state.today;
+  if (!newVersion && !newDay) return;
+  const busy = [...document.querySelectorAll("dialog")].some(d => d.open) || document.activeElement?.matches("input, textarea, select");
+  if (!busy) location.reload();
+  else issues([["warning", newVersion ? "页面有新版本，忙完刷新一下就能看到。" : "日期已经变了，忙完刷新一下就能看到今天的。"]]);
+}
+
 async function boot() {
   if (!BASE) $("homeLink").hidden = true;
+  document.addEventListener("visibilitychange", checkForUpdate);
+  window.addEventListener("pageshow", e => { if (e.persisted) { lastCheck = 0; checkForUpdate(); } });
   for (const dlg of document.querySelectorAll("dialog")) {
     dlg.querySelector(".close-dialog")?.addEventListener("click", () => dlg.close());
   }

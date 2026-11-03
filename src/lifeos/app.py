@@ -1,8 +1,10 @@
 """HTTP API. Everything an agent needs is discoverable from GET /llms.txt and GET /api/v1."""
+import hashlib
 import json
 import logging
 import re
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 from typing import Annotated, Any
@@ -10,7 +12,13 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, FastAPI, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
@@ -42,6 +50,21 @@ PAGE_HEADERS = {
 }
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,47}$")
 MANUAL = resources.files("lifeos").joinpath("manual.md").read_text(encoding="utf-8")
+WEB_FILES = ("index.html", "app.js", "style.css")
+
+
+@lru_cache(maxsize=8)
+def _hash_web(stamp: tuple) -> str:
+    h = hashlib.sha256()
+    for name in WEB_FILES:
+        h.update((WEB_DIR / name).read_bytes())
+    return h.hexdigest()[:12]
+
+
+def web_version() -> str:
+    """A short hash of the page's files. It changes with every deploy that touches them, which
+    lets a tab opened before the deploy notice and reload."""
+    return _hash_web(tuple((str(WEB_DIR), (WEB_DIR / n).stat().st_mtime_ns) for n in WEB_FILES))
 
 
 # --- request bodies (also document the API in /openapi.json) ------------------------------
@@ -328,7 +351,12 @@ def public_router() -> APIRouter:
 
     @r.get("/", include_in_schema=False)
     def page():
-        return FileResponse(WEB_DIR / "index.html", headers=PAGE_HEADERS)
+        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("{VERSION}", web_version()), headers=PAGE_HEADERS)
+
+    @r.get("/version", include_in_schema=False)
+    def version():
+        return JSONResponse({"web": web_version()}, headers={"Cache-Control": "no-store"})
 
     @r.get("/static/{name}", include_in_schema=False)
     def static(name: str):
