@@ -167,6 +167,96 @@ def test_samples_dedupe_and_series(client):
     assert [p["value"] for p in h["points"]] == [1200, 500]
 
 
+EXPORT, AUTO = "apple_health:Apple Watch", "health_auto_export:unknown"
+
+
+def _sample(metric, source, d, start, end, value, end_day=None, offset="+09:00"):
+    return {"metric": metric, "value": value, "source": source, "start": f"{d}T{start}:00{offset}",
+            "end": f"{end_day or d}T{end}:00{offset}"}
+
+
+def _values(client, metric, d, to=None, **params):
+    return [p["value"] for p in client.get(f"/api/v1/metrics/{metric}/series", params={
+        "from": d, "to": to or d, **params}).json()["points"]]
+
+
+def test_export_and_auto_export_count_once(client):
+    """The export file and Health Auto Export carry the same Apple Health data but bucket it
+    differently, so the larger value of each hour would add up to more than either has."""
+    def burn(source, d, start, end, value):
+        return _sample("basal_energy", source, d, start, end, value)
+
+    def series(d, **params):
+        return _values(client, "basal_energy", d, **params)
+
+    d = "2026-10-10"
+    client.post("/api/v1/samples", json={"samples": [
+        burn(EXPORT, d, "10:50", "11:20", 60), burn(EXPORT, d, "11:30", "11:50", 40),  # 100
+        burn(AUTO, d, "10:00", "11:00", 40), burn(AUTO, d, "11:00", "12:00", 50)]})  # 90
+    assert series(d) == [100]  # the export alone, not 60 + 50
+    assert series(d, bucket="hour") == [60, 40]
+    assert client.get("/api/v1/summary/day", params={"date": d}).json()["activity"]["basal_kcal"] == 100
+    f = "2026-10-11"  # the export stops early: the other fills only the hours it lacks
+    client.post("/api/v1/samples", json={"samples": [
+        burn(EXPORT, f, f"{h:02d}:00", f"{h:02d}:59", 80) for h in range(0, 3)] + [
+        burn(AUTO, f, f"{h:02d}:00", f"{h:02d}:59", 70) for h in range(2, 5)]})
+    assert series(f) == [380] and series(f, bucket="hour") == [80, 80, 80, 70, 70]
+    g = "2026-10-12"  # one sample runs into 11:00; the other copy's 11:00 share is the same burn
+    client.post("/api/v1/samples", json={"samples": [
+        burn(EXPORT, g, "10:30", "11:50", 110), burn(AUTO, g, "10:00", "10:00", 50),
+        burn(AUTO, g, "11:00", "11:00", 59)]})
+    assert series(g) == [110] and series(g, bucket="hour") == [110]
+    e = "2026-10-13"  # the export ends at 21:43; its last hour is short, the other copy's is whole
+    client.post("/api/v1/samples", json={"samples": [
+        burn(EXPORT, e, f"{h:02d}:00", f"{h:02d}:59", 80) for h in range(21)] + [
+        burn(EXPORT, e, "21:00", "21:43", 50)] + [
+        burn(AUTO, e, f"{h:02d}:00", f"{h:02d}:00", 70) for h in range(18, 24)]})
+    assert series(e) == [21 * 80 + 70 + 2 * 70]
+
+
+def test_sleep_counts_once_and_by_the_morning(client):
+    def core(source, d, start, end, value, end_day=None):
+        return _sample("sleep_core", source, d, start, end, value, end_day)
+
+    client.post("/api/v1/samples", json={"samples": [
+        core(EXPORT, "2026-10-19", "23:30", "23:50", 20),  # before midnight: still last night
+        core(EXPORT, "2026-10-20", "01:30", "02:30", 60), core(EXPORT, "2026-10-20", "03:00", "04:00", 70),
+        core(AUTO, "2026-10-19", "23:20", "07:30", 155, end_day="2026-10-20")]})  # one point a night
+    assert _values(client, "sleep_core", "2026-10-19") == []
+    assert _values(client, "sleep_core", "2026-10-20") == [155]
+    assert sum(_values(client, "sleep_core", "2026-10-19", "2026-10-20", bucket="hour")) == 155
+    sleep = client.get("/api/v1/summary/day", params={"date": "2026-10-20"}).json()["sleep"]
+    assert sleep["core_min"] == 155
+
+
+def test_hour_series_keeps_one_device_per_hour_across_dates(client):
+    # 00:10 at +09:00 and 16:20 at +01:00 the evening before are the same hour on the clock
+    client.post("/api/v1/samples", json={"samples": [
+        {"metric": "step_count", "value": 100, "source": "agent", "start": "2026-10-16T00:10:00+09:00"},
+        {"metric": "step_count", "value": 100, "source": "manual", "start": "2026-10-15T16:20:00+01:00"}]})
+    assert _values(client, "step_count", "2026-10-15", "2026-10-16", bucket="hour") == [100]
+
+
+def test_old_sleep_rows_move_to_the_morning(tmp_path):
+    from lifeos import db
+    conn = db.connect(tmp_path / "old.db")
+    conn.executescript(db.SCHEMA)
+    conn.executescript(db.MIGRATIONS[2])
+    conn.execute("PRAGMA user_version=2")
+    conn.execute("INSERT INTO metrics(name, title, unit, aggregation, date_by, created_at)"
+                 " VALUES ('sleep_core', '核心睡眠', 'min', 'sum', 'end', 'x')")
+    for i, (start, end, d) in enumerate((
+            ("2026-10-19T23:30:00+09:00", "2026-10-19T23:50:00+09:00", "2026-10-19"),
+            ("2026-10-20T01:30:00+09:00", "2026-10-20T02:30:00+09:00", "2026-10-20"),
+            ("2026-10-20T14:00:00+09:00", "2026-10-20T14:40:00+09:00", "2026-10-20"))):
+        conn.execute("INSERT INTO samples(metric, start_at, end_at, start_ts, end_ts, local_date,"
+                     " value, unit, source, created_by, created_at) VALUES ('sleep_core', ?, ?, ?, ?,"
+                     " ?, 1, 'min', 'x', 'x', 'x')", (start, end, i, i, d))
+    db.migrate(conn)
+    dates = [r[0] for r in conn.execute("SELECT local_date FROM samples ORDER BY start_at")]
+    assert dates == ["2026-10-20", "2026-10-20", "2026-10-20"]  # the nap stays on its own day
+
+
 def test_summary_day(client):
     client.patch("/api/v1/profile", json={"goals": {"kcal": 2000, "protein_g": 100}})
     client.post("/api/v1/records", json=MEAL)

@@ -333,12 +333,12 @@ def test_export_workout_gets_heart_rate_from_samples(client, tmp_path):
 
 
 def test_migrates_v1_database(tmp_path):
-    from lifeos.db import SCHEMA, connect, migrate
+    from lifeos.db import SCHEMA, SCHEMA_VERSION, connect, migrate
     conn = connect(tmp_path / "old.db")
     conn.executescript(SCHEMA)
     conn.execute("PRAGMA user_version=1")
     migrate(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     conn.execute("SELECT * FROM record_series").fetchall()
 
 

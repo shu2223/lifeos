@@ -2,7 +2,8 @@
 
 Several devices often record the same thing (iPhone and Apple Watch both count steps), so
 daily totals of `sum` metrics take, for each hour, the largest per-source total instead of
-adding sources together. Sleep stages do the same per night.
+adding sources together. Sleep stages do the same per night. Apple Health data that arrived
+twice, from the export file and from Health Auto Export, counts once per day (see `_hours`).
 """
 from datetime import date, datetime, timedelta
 
@@ -13,6 +14,8 @@ from .timeutil import iso, parse, utc_now
 
 MAX_BATCH = 5000
 MAX_LIMIT = 1000
+APPLE_COPIES = ("apple_health", "health_auto_export")  # source prefixes of the same Apple Health data
+HOUR_KEY = "CAST(start_ts / 3600 AS INTEGER)"
 INSERT_SQL = (
     "INSERT INTO samples(metric, start_at, end_at, start_ts, end_ts, local_date, value, unit,"
     " source, meta, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
@@ -44,13 +47,19 @@ def ensure_metric(conn, name: str, unit: str | None, *, aggregation: str | None 
     return m
 
 
+def wake_day(end_iso: str) -> str:
+    """The morning a stretch of sleep belongs to: sleep that ends after 18:00 counts toward the
+    night ahead, so a night is one date even when it starts before midnight."""
+    return (datetime.fromisoformat(end_iso) + timedelta(hours=6)).date().isoformat()
+
+
 def row_for(m: dict, value: float, unit: str | None, start_iso: str, start_ts: float,
             start_date: str, end_iso: str, end_ts: float, end_date: str, source: str,
             meta: dict | None, actor: str, now: str) -> tuple:
     value, unit = mx.convert(m["name"], float(value), unit or m["unit"], m["unit"])
     return (m["name"], start_iso, end_iso, start_ts, end_ts,
-            end_date if m["date_by"] == "end" else start_date, round(value, 6), unit, source,
-            dumps(meta) if meta else None, actor, now)
+            wake_day(end_iso) if m["date_by"] == "end" else start_date, round(value, 6), unit,
+            source, dumps(meta) if meta else None, actor, now)
 
 
 def add(conn, items: list[dict], actor: str, tz) -> dict:
@@ -141,24 +150,69 @@ def search(conn, *, metric_name=None, date_from=None, date_to=None, source=None,
 
 def _dedupe_key(name: str) -> str:
     # Sleep: one source wins per night. Everything else: one source wins per hour.
-    return "0" if name.startswith("sleep_") else "CAST(start_ts / 3600 AS INTEGER)"
+    return "0" if name.startswith("sleep_") else HOUR_KEY
+
+
+def _hours(conn, name: str, d_from: str, d_to: str, key: str) -> dict[str, tuple[dict, int]]:
+    """{local_date: ({bucket: {source: value}}, samples)} for a `sum` metric. One source counts
+    per bucket, the larger (iPhone and Watch both counting a walk).
+
+    The export file and Health Auto Export carry the same Apple Health data but bucket it
+    differently, so each day keeps the copy with the larger total. The other adds only buckets
+    whose time no kept sample covers, and where it runs on past either end of the kept copy it
+    may also stand in for that copy's short edge bucket. Health Auto Export's hourly points are
+    instants at the top of the hour; each stands for the hour after it. Other sources, such as an
+    agent or the web page, count per bucket against all of that as before."""
+    days: dict[str, dict] = {}
+    for r in conn.execute(f"""
+            SELECT local_date, {key} AS h, source, SUM(value) AS v, COUNT(*) AS n,
+                   MIN(start_ts) AS s,
+                   MAX(CASE WHEN end_ts > start_ts THEN end_ts ELSE start_ts + 3600 END) AS e
+            FROM samples WHERE metric = ? AND local_date BETWEEN ? AND ?
+            GROUP BY local_date, h, source""", (name, d_from, d_to)):
+        day = days.setdefault(r["local_date"], {"n": 0, "copies": {}, "other": {}})
+        day["n"] += r["n"]
+        copy = r["source"].split(":", 1)[0]
+        if copy not in APPLE_COPIES:
+            day["other"].setdefault(r["h"], {})[r["source"]] = r["v"]
+            continue
+        b = day["copies"].setdefault(copy, {}).setdefault(r["h"], {"src": {}, "s": r["s"], "e": r["e"]})
+        b["src"][r["source"]] = r["v"]
+        b["s"], b["e"] = min(b["s"], r["s"]), max(b["e"], r["e"])
+    out = {}
+    for d, day in days.items():
+        kept: dict = {}
+        copies = sorted(day["copies"].items(),
+                        key=lambda c: (-sum(max(b["src"].values()) for b in c[1].values()), c[0]))
+        if copies:
+            first = copies[0][1]
+            kept = {h: dict(b["src"]) for h, b in first.items()}
+            covered = [(b["s"], b["e"]) for b in first.values()]
+            lo, hi, first_h, last_h = (min(s for s, _ in covered), max(e for _, e in covered),
+                                       min(first), max(first))
+            for _, buckets in copies[1:]:
+                later = any(b["s"] >= hi for b in buckets.values())
+                earlier = any(b["e"] <= lo for b in buckets.values())
+                for h, b in sorted(buckets.items()):
+                    if h in kept:
+                        if (h == last_h and later) or (h == first_h and earlier):
+                            kept[h].update(b["src"])  # the kept copy stops or starts within it
+                    elif not any(b["s"] < e and s < b["e"] for s, e in covered):
+                        kept[h] = dict(b["src"])
+                        covered.append((b["s"], b["e"]))
+        for h, src in day["other"].items():
+            kept.setdefault(h, {}).update(src)
+        out[d] = (kept, day["n"])
+    return out
 
 
 def daily(conn, m: dict, d_from: str, d_to: str) -> dict[str, dict]:
     """{local_date: {value, count, min?, max?}} for one metric over an inclusive date range."""
     name, args = m["name"], (m["name"], d_from, d_to)
     if m["aggregation"] == "sum":
-        rows = conn.execute(f"""
-            SELECT local_date, SUM(v) AS value, SUM(n) AS count FROM (
-              SELECT local_date, h, MAX(v) AS v, SUM(n) AS n FROM (
-                SELECT local_date, {_dedupe_key(name)} AS h, source, SUM(value) AS v,
-                       COUNT(*) AS n
-                FROM samples WHERE metric = ? AND local_date BETWEEN ? AND ?
-                GROUP BY local_date, h, source)
-              GROUP BY local_date, h)
-            GROUP BY local_date""", args)
-        return {r["local_date"]: {"value": round(r["value"], 2), "count": r["count"]}
-                for r in rows}
+        return {d: {"value": round(sum(max(src.values()) for src in hours.values()), 2),
+                    "count": n}
+                for d, (hours, n) in _hours(conn, name, d_from, d_to, _dedupe_key(name)).items()}
     if m["aggregation"] == "last":
         rows = conn.execute("""
             SELECT local_date, value, n FROM (
@@ -191,14 +245,22 @@ def series(conn, name: str, d_from: str, d_to: str, bucket: str, tz) -> dict:
     if bucket == "hour":
         if (date.fromisoformat(d_to) - date.fromisoformat(d_from)).days > 31:
             raise bad_request("hour buckets cover at most 31 days")
-        agg = {"sum": "MAX(v)", "avg": "AVG(v)", "last": "MAX(v)"}[m["aggregation"]]
-        inner = "SUM(value)" if m["aggregation"] == "sum" else "AVG(value)"
-        rows = conn.execute(f"""
-            SELECT h, {agg} AS value FROM (
-              SELECT CAST(start_ts / 3600 AS INTEGER) AS h, source, {inner} AS v
-              FROM samples WHERE metric = ? AND local_date BETWEEN ? AND ?
-              GROUP BY h, source)
-            GROUP BY h ORDER BY h""", (m["name"], d_from, d_to))
+        if m["aggregation"] == "sum":
+            by_hour: dict[int, dict] = {}  # each source added up across dates, then the larger
+            for hours, _ in _hours(conn, m["name"], d_from, d_to, HOUR_KEY).values():
+                for h, src in hours.items():
+                    acc = by_hour.setdefault(h, {})
+                    for s, v in src.items():
+                        acc[s] = acc.get(s, 0) + v
+            rows = [{"h": h, "value": max(src.values())} for h, src in sorted(by_hour.items())]
+        else:
+            agg = "AVG(v)" if m["aggregation"] == "avg" else "MAX(v)"
+            rows = conn.execute(f"""
+                SELECT h, {agg} AS value FROM (
+                  SELECT {HOUR_KEY} AS h, source, AVG(value) AS v
+                  FROM samples WHERE metric = ? AND local_date BETWEEN ? AND ?
+                  GROUP BY h, source)
+                GROUP BY h ORDER BY h""", (m["name"], d_from, d_to))
         points = [{"bucket": iso(datetime.fromtimestamp(r["h"] * 3600, tz)),
                    "value": round(r["value"], 2)} for r in rows]
     else:

@@ -165,6 +165,12 @@ CREATE TABLE IF NOT EXISTS record_series (
   PRIMARY KEY (record_id, name)
 );
 """,
+    # Sleep was dated by the day each segment ended, splitting a night that began before midnight
+    # across two dates; date it by the morning it ends in instead (samples.wake_day).
+    3: """
+UPDATE samples SET local_date = date(substr(end_at, 1, 19), '+6 hours')
+WHERE metric IN (SELECT name FROM metrics WHERE date_by = 'end');
+""",
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 

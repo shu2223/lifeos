@@ -344,7 +344,8 @@ What the imports produce:
 
 - Steps, energy, heart rate, HRV, SpO₂, weight and every other quantity become **samples**.
 - Sleep stages become the samples `sleep_core`, `sleep_deep`, `sleep_rem`, `sleep_awake` and
-  `sleep_in_bed`. They are dated by the morning you woke up.
+  `sleep_in_bed`. They are dated by the morning you woke up: sleep that ends after 18:00 counts
+  toward the next morning, so a night that starts before midnight stays on one date.
 - Workouts become `workout` **records** with source `apple_health`. Routes are attached as GPX
   files.
 - With Health Auto Export's "Include Workout Metrics" option on, each workout also carries
@@ -361,7 +362,9 @@ What the imports produce:
 - Activity rings become one `activity_summary` record per day.
 
 When iPhone and Watch both record the same thing, daily totals count each hour once, taking
-the larger source. Do not add the sources yourself; use `/summary/*` and `/metrics/*/series`.
+the larger source. On days that both the export file and Health Auto Export cover, the same
+data arrived twice: the copy with the larger day total counts, and the other fills only the
+hours it lacks. Do not add the sources yourself; use `/summary/*` and `/metrics/*/series`.
 The original upload files are kept under the data directory.
 
 ## 8. Reference
