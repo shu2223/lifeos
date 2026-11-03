@@ -1,8 +1,8 @@
 # lifeos — agent manual
 
 lifeos holds one person's life records on their own machine: what they eat, Apple Health and
-Apple Fitness data, workouts, sleep, weight, mood, diary, medication, spending, and any category
-an agent adds later. You (an agent) read and write it over HTTP on the owner's behalf.
+Apple Fitness data, workouts, sleep, weight, mood, diary, medication, spending, smoking, and any
+category an agent adds later. You (an agent) read and write it over HTTP on the owner's behalf.
 
 **API root: `{BASE}/api/v1`.** This is the one address an agent needs, and every endpoint
 lives under it. This manual is `{BASE}/api/v1/manual` and the OpenAPI spec is
@@ -43,7 +43,7 @@ using.
 - `profile`: name, height, goals, diet preferences and allergies.
 - `categories`: what kinds of records exist.
 - `metrics_with_data`: which numeric series exist.
-- `today_summary`: meals so far, intake against goals, steps, sleep and workouts.
+- `today_summary`: meals so far, intake against goals, steps, sleep, workouts and cigarettes.
 - `frequent_foods`: the user's food library, most-used first.
 - `recent_records`: the last 10 entries, which helps you avoid writing duplicates.
 
@@ -58,6 +58,7 @@ using.
 | took a medicine or supplement | record, category `medication` | `POST /records` |
 | a symptom ("头疼") | record, category `symptom` | `POST /records` |
 | spent money | record, category `expense` | `POST /records` |
+| smoked ("抽了根烟", "下午抽了3根") | record, category `smoking` | `POST /records` |
 | how they slept, subjectively | record, category `sleep` | `POST /records` |
 | a single number: weight, water, blood pressure, temperature | **sample** | `POST /samples` |
 | a stable fact: height, birthday, goals, allergies | **profile** key | `PATCH /profile` |
@@ -216,7 +217,36 @@ it with what the user added (for example `rpe`, or a `note`).
  "kind": "food"}}
 ```
 
-### 6.6 A new kind of record
+### 6.6 Cigarettes
+
+The user tracks how much they smoke. Each `smoking` record is one occasion holding
+`data.count` cigarettes. The user also taps a +1 button on their web page each time they light
+one, which writes `{"count": 1}` with source `manual`, so some cigarettes are already there
+before they talk to you.
+
+| The user says… | Do |
+|---|---|
+| "抽了一根" / "刚抽了根烟" | `POST /records` with `{"category": "smoking", "data": {"count": 1}}`; `start` defaults to now |
+| "下午抽了3根" | one record with `count: 3` and `start` in the afternoon, never later than `now` (15:30, or now if it is earlier than that) |
+| "今天一共抽了10根" | read `smoking.cigarettes` from `GET /summary/day` first, then write one record with only the difference. If it is already 10 or more, write nothing and say what is recorded |
+| "多记了一根" / "刚才那根不算" | take back the latest entry: PATCH its `count` down by one, or DELETE it when `count` is 1 |
+
+```json
+{"category": "smoking", "data": {"count": 1, "trigger": "饭后"}, "note": "吃完饭抽了一根"}
+```
+
+- Optional fields: `kind` (`heated` for IQOS or glo, `e_cigarette`, `cigar`; omit it for
+  ordinary cigarettes), `brand`, and `trigger`, what led to it in the user's own words.
+- `GET /summary/day` has a `smoking` object: `cigarettes` (the day's total), `daily_max` (the
+  user's own cap, from profile `goals.cigarettes_max`, or null; "每天最多8根" is
+  `PATCH /profile {"goals": {"cigarettes_max": 8}}`), `yesterday`, `avg_prev_7d`,
+  `last_at` (the latest cigarette up to that day), `tracking_since` and `entries`. It is `null`
+  until the first cigarette is logged. From then on, a day with no entries counts as 0, a
+  smoke-free day. Rows of `GET /summary/days` carry `cigarettes` the same way.
+- Record and report without judgment, and don't lecture. Confirm with the day's total, and
+  the cap if they set one: "记好了：今天第 6 根（上限 8 根）".
+
+### 6.7 A new kind of record
 
 When nothing fits, first check `GET /categories` for one that does. If none fits, create one:
 
@@ -231,19 +261,20 @@ POST {BASE}/api/v1/categories
 
 Write the `description` for the next agent that will use it. Names are snake_case.
 
-### 6.7 Answer questions
+### 6.8 Answer questions
 
 | Question | Call |
 |---|---|
 | 今天吃了多少 / 还能吃多少 | `GET /summary/day` (default today), then read `nutrition.intake`, `nutrition.remaining` and `energy_balance` |
 | 这周 / 这个月怎么样 | `GET /summary/days?from=2026-10-27&to=2026-11-02` |
+| 今天抽了几根 / 这周抽了多少 | `GET /summary/day`, then `smoking`; for a range, `cigarettes` in each row of `GET /summary/days` |
 | a trend in one metric | `GET /metrics/step_count/series?from=…&to=…&bucket=day\|week\|month\|hour` |
 | 上次吃拉面是什么时候 | `GET /records?category=meal&q=拉面&limit=5` |
 | everything on one day | `GET /records?date=2026-11-01&order=asc` |
 
 Lists return `next_cursor` when there is more. Pass it back as `cursor` to get the next page.
 
-### 6.8 Photos and files
+### 6.9 Photos and files
 
 To attach a photo to a record, send the raw file as the body:
 
@@ -256,7 +287,7 @@ Content-Type: image/jpeg
 
 A multipart form with the field `file` also works. `GET /attachments/{id}` downloads a file.
 
-### 6.9 Profile and goals
+### 6.10 Profile and goals
 
 ```http
 PATCH {BASE}/api/v1/profile
@@ -264,7 +295,9 @@ PATCH {BASE}/api/v1/profile
  "diet": {"allergies": ["花生"], "preferences": ["少油"]}}
 ```
 
-`null` deletes a key. The `timezone` key drives every day boundary. Change it when the user
+`null` deletes a key. `goals` merges one level down: send only the goals you change, and a goal
+set to `null` is removed; the others stay. `goals.cigarettes_max` is a daily cap on cigarettes,
+not a target to reach. The `timezone` key drives every day boundary. Change it when the user
 moves, not for short trips: times with an explicit offset already land on the right local day.
 
 ## 7. Apple Health and Apple Fitness

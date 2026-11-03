@@ -148,7 +148,9 @@ const FIELDS = {
   merchant: ["商家", ""], body_part: ["部位", ""], quality: ["睡眠质量", "/5"], awakenings: ["醒来次数", "次"],
   place: ["地点", ""], payment_method: ["支付方式", ""],
   move_kcal: ["活动", "kcal"], move_goal_kcal: ["活动目标", "kcal"], exercise_min: ["锻炼", "分钟"],
-  exercise_goal_min: ["锻炼目标", "分钟"], stand_hours: ["站立", "小时"], stand_goal_hours: ["站立目标", "小时"]};
+  exercise_goal_min: ["锻炼目标", "分钟"], stand_hours: ["站立", "小时"], stand_goal_hours: ["站立目标", "小时"],
+  brand: ["品牌", ""], trigger: ["场景", ""]};
+const SMOKE_KIND = {cigarette: "香烟", heated: "加热烟", e_cigarette: "电子烟", cigar: "雪茄", other: "其他"};
 const HIDDEN_FIELDS = new Set(["import_via", "hae_id", "metadata", "other_stats", "activity_type", "items", "totals",
   "meal_type", "estimated", "estimation_note", "text", "sets"]);
 const SOURCES = {apple_health: "Apple 健康", manual: "手动", agent: "agent"};
@@ -162,6 +164,7 @@ function recordSide(rec) {
   if (rec.category === "mood" && d.score != null) return [d.score, "/10"];
   if (rec.category === "expense" && d.amount != null) return [fmt(d.amount, 2), d.currency || ""];
   if (rec.category === "symptom" && d.severity != null) return [d.severity, "/10"];
+  if (rec.category === "smoking" && d.count != null) return [d.count, "根"];
   return null;
 }
 function recordSub(rec) {
@@ -173,6 +176,7 @@ function recordSub(rec) {
   }
   if (rec.category === "journal") return (d.text || "").slice(0, 80);
   if (rec.category === "mood") return rec.note || "";
+  if (rec.category === "smoking") return [d.trigger, rec.note].filter(Boolean).join(" · ");
   return rec.note || "";
 }
 
@@ -301,8 +305,8 @@ function barChart(host, o) {
   const {W, tip} = chartFrame(host);
   const H = o.height || 200, padL = 40, padR = o.goal ? 64 : 12, padT = 10, padB = 24;
   const n = o.points.length;
-  if (!o.points.some(p => p.y)) { host.replaceChildren(h("p", {class: "empty"}, "这段时间没有数据。")); return; }
-  const max = Math.max(...o.points.map(p => p.y || 0), o.goal || 0);
+  if (!o.points.some(p => p.y != null)) { host.replaceChildren(h("p", {class: "empty"}, "这段时间没有数据。")); return; }
+  const max = Math.max(...o.points.map(p => p.y || 0), o.goal || 0) || 1;  // all zeros (a smoke-free week) still draws
   const {hi, ticks} = niceScale(0, max, 4, true);
   const slot = (W - padL - padR) / n, bw = Math.max(1, Math.min(24, slot - 2));
   const Y = y => padT + (1 - y / hi) * (H - padT - padB), base = Y(0);
@@ -320,7 +324,7 @@ function barChart(host, o) {
   });
   if (o.goal) {
     svg.append(s("line", {class: "crosshair", x1: padL, x2: W - padR, y1: Y(o.goal), y2: Y(o.goal)}),
-      s("text", {class: "tick", x: W - padR + 6, y: Y(o.goal) + 4}, "目标 " + compact(o.goal)));
+      s("text", {class: "tick", x: W - padR + 6, y: Y(o.goal) + 4}, (o.goalLabel || "目标") + " " + compact(o.goal)));
   }
   const idx = xTickIndices(n, Math.max(2, Math.floor((W - padL - padR) / 60)));
   idx.forEach(i => svg.append(s("text", {class: "tick", x: padL + (i + 0.5) * slot, y: H - 6, "text-anchor": "middle"}, o.points[i].label)));
@@ -476,12 +480,84 @@ async function viewDay(day) {
   }
   const workouts = recs.filter(r => r.category === "workout");
   if (workouts.length) right.push(card("运动", `${workouts.length} 次`, recordRows(workouts, {range: true})));
-  const others = recs.filter(r => !["meal", "workout", "activity_summary"].includes(r.category));
+  const others = recs.filter(r => !["meal", "workout", "activity_summary", "smoking"].includes(r.category));
   right.push(card("其他记录", null, others.length ? recordRows(others, {chip: true})
     : h("p", {class: "empty"}, "心情、日记、用药、症状、花销都会出现在这里。")));
 
-  return [daybar, h("section", {class: "tiles", "aria-label": "当天概览"}, tiles),
+  return [daybar, day === state.today || sum.smoking ? smokingCard(day, sum.smoking) : null,
+    h("section", {class: "tiles", "aria-label": "当天概览"}, tiles),
     h("div", {class: "columns"}, h("div", {class: "stack"}, mealCard), h("div", {class: "stack"}, right))];
+}
+
+// One record per cigarette. +1 counts at once and settles when the server answers; −1 takes back
+// the day's latest entry (one off its count, or the whole record when it holds a single one).
+function smokingCard(day, initial) {
+  const live = day === state.today;
+  let sm = initial || {cigarettes: 0, entries: [], daily_max: state.profile.goals?.cigarettes_max ?? null};
+  let pending = 0, busy = false;
+  const host = h("section", {class: "card smoke", "aria-label": "抽烟"});
+  const draw = () => {
+    const n = sm.cigarettes + pending, max = sm.daily_max;
+    const focused = host.contains(document.activeElement) && document.activeElement.getAttribute("aria-label");
+    const last = sm.last_at && live
+      ? `上一根 ${sm.last_at.slice(0, 10) === day ? "" : relDay(sm.last_at.slice(0, 10)) + " "}${clock(sm.last_at)} · ${ago(sm.last_at)}` : null;
+    const notes = initial || n ? [last, sm.yesterday != null && `${live ? "昨天" : "前一天"} ${sm.yesterday} 根`,
+      sm.avg_prev_7d != null && `前 7 天日均 ${fmt(sm.avg_prev_7d, 1)} 根`,
+      max != null && `上限 ${max} 根` + (n > max ? `，超出 ${n - max}` : "")].filter(Boolean)
+      : ["抽一根点一下 +1，也可以跟 agent 说“抽了一根”。"];
+    fill(host,
+      h("div", {class: "smoke-main"},
+        h("div", {class: "smoke-count"},
+          h("span", {class: "label"}, live ? "今天抽烟" : "抽烟",
+            h("a", {href: "#/trends", class: "back", onclick: () => { state.trends.metric = "smoking"; }}, "趋势")),
+          h("span", {class: "value"}, String(n), h("span", {class: "unit"}, "根")),
+          notes.length ? h("span", {class: "note"}, notes.join(" · ")) : null),
+        live ? h("div", {class: "smoke-actions"},
+          n > 0 ? button("−1", undo, "btn big", {"aria-label": "撤销一根", disabled: pending > 0 || busy}) : null,
+          button("+1 根", add, "btn primary big", {"aria-label": "记一根烟", disabled: busy})) : null),
+      max != null ? meter(max > 0 ? n / max : n > 0 ? 2 : 0, true) : null,
+      sm.entries.length ? h("div", {class: "smoke-times", "aria-label": "每一根的时间"}, sm.entries.map(e =>
+        h("button", {type: "button", onclick: () => openRecord(e.id)}, clock(e.start), e.count > 1 ? ` ×${e.count}` : null))) : null);
+    if (focused) host.querySelector(`[aria-label="${focused}"]`)?.focus();  // keep keyboard focus on +1 / −1
+  };
+  async function add() {
+    pending++; draw();
+    let record;
+    try {
+      ({record} = await api("/records", {method: "POST", body: {category: "smoking", source: "manual", data: {count: 1}}}));
+    } catch (err) { pending--; draw(); toast(err.message); return; }
+    pending--;
+    if (record.local_date !== day) { toast("已记下"); await loadContext(); rerender(); return; }  // past midnight since the page loaded
+    sm = {...sm, cigarettes: sm.cigarettes + 1, last_at: record.start, entries: [...sm.entries, {id: record.id, start: record.start, count: 1}]};
+    draw();
+    toast(`记下了，今天 ${sm.cigarettes + pending} 根`);
+  }
+  // Works from a fresh read, not the card's copy: an agent may have changed or added entries since it was drawn.
+  async function undo() {
+    if (pending || busy) return;
+    busy = true; draw();
+    const reload = async () => {
+      sm = (await api("/summary/day?date=" + day)).smoking || {cigarettes: 0, entries: [], daily_max: sm.daily_max};
+    };
+    try {
+      const fresh = await api("/summary/day");
+      if (fresh.date !== day) { busy = false; toast("已经是新的一天了"); await loadContext(); rerender(); return; }
+      const entries = fresh.smoking?.entries || [];
+      const last = entries.filter(e => Date.parse(e.start) <= Date.now()).at(-1) || entries.at(-1);
+      if (last) {
+        if (last.count > 1) await api("/records/" + last.id, {method: "PATCH", body: {data: {count: last.count - 1}}});
+        else await api("/records/" + last.id, {method: "DELETE"});
+      }
+      await reload();
+      toast(last ? `撤销了一根，今天 ${sm.cigarettes} 根` : "今天还没有记录");
+    } catch (err) {
+      toast(err.message);
+      await reload().catch(() => {});
+    }
+    busy = false; draw();
+  }
+  draw();
+  return host;
 }
 
 const workoutName = d => (ACTIVITY[d.activity_type] && d.activity_type !== "other" ? ACTIVITY[d.activity_type] : d.activity_name || "运动")
@@ -489,6 +565,7 @@ const workoutName = d => (ACTIVITY[d.activity_type] && d.activity_type !== "othe
 function shortTitle(rec) {
   if (rec.category === "workout") return workoutName(rec.data || {});
   if (rec.category === "mood") return (rec.data?.emotions || []).join("、") || "心情";
+  if (rec.category === "smoking" && rec.title.startsWith("抽烟 ")) return SMOKE_KIND[rec.data?.kind] || "香烟";
   const prefix = catTitle(rec.category) + "：";
   return rec.title.startsWith(prefix) ? rec.title.slice(prefix.length) : rec.title;
 }
@@ -616,9 +693,10 @@ function factList(data, category) {
   }
   if (!rows.length) return null;
   return h("dl", {class: "facts" + (rows.length > 6 ? " two" : "")}, rows.flatMap(([k, v]) => {
-    const [label, unit] = FIELDS[k] || [k, ""];
+    const [label, unit] = category === "smoking" && k === "count" ? ["数量", "根"] : FIELDS[k] || [k, ""];
     const digits = DIGITS[k] ?? (Math.abs(v) >= 10 ? 0 : 1);
-    const text = Array.isArray(v) ? v.join("、") : typeof v === "boolean" ? (v ? "是" : "否") : typeof v === "number" ? fmt(v, digits) : v;
+    const text = Array.isArray(v) ? v.join("、") : typeof v === "boolean" ? (v ? "是" : "否") : typeof v === "number" ? fmt(v, digits)
+      : category === "smoking" && k === "kind" ? SMOKE_KIND[v] || v : v;
     return [h("dt", null, label), h("dd", null, text, unit ? h("span", {class: "muted"}, " " + unit) : null)];
   }));
 }
@@ -696,7 +774,7 @@ async function guarded(fn) {
 const UNIT_LABELS = {"count": "", "count/min": "次/分", "min": "分钟", "hr": "小时", "degC": "°C", "mL": "ml",
   "km/hr": "km/h", "appleEffortScore": "", "dBASPL": "dB"};
 const TREND_METRICS = [["energy", "热量"], ["body_mass", "体重"], ["step_count", "步数"], ["sleep", "睡眠"],
-  ["exercise_time", "锻炼"], ["resting_heart_rate", "静息心率"], ["heart_rate_variability", "心率变异性"]];
+  ["exercise_time", "锻炼"], ["resting_heart_rate", "静息心率"], ["heart_rate_variability", "心率变异性"], ["smoking", "抽烟"]];
 const RANGES = [[7, "7 天"], [30, "30 天"], [90, "90 天"], [365, "1 年"]];
 
 function weekly(rows) {
@@ -714,7 +792,7 @@ function weekly(rows) {
 async function viewTrends() {
   const t = state.trends, to = state.today, from = shiftDay(to, -(t.range - 1)), week = t.range > 90;
   const metricMeta = Object.fromEntries(state.metrics.map(m => [m.name, m]));
-  const days = (await api("/summary/days?" + q({from, to}))).days;
+  const days = (await api("/summary/days?" + q({from, to}))).days, smoking = days.some(d => d.cigarettes != null);
   const dayRows = names => Promise.all(names.map(n => metricMeta[n]
     ? api(`/metrics/${n}/series?` + q({from, to, bucket: "day"})).then(r => Object.fromEntries(r.points.map(p => [p.bucket, p.value])))
     : Promise.resolve({})));
@@ -727,6 +805,9 @@ async function viewTrends() {
   } else if (t.metric === "sleep") {
     rows = days.map(d => ({date: d.date, value: d.sleep_hours ?? null}));
     kind = "bar"; unit = "小时"; title = "睡眠时长"; digits = 1; goal = state.profile.goals?.sleep_hours;
+  } else if (t.metric === "smoking") {
+    rows = days.map(d => ({date: d.date, value: d.cigarettes ?? null}));
+    kind = "bar"; unit = "根"; title = "抽烟"; digits = week ? 1 : 0; goal = state.profile.goals?.cigarettes_max;
   } else {
     const m = metricMeta[t.metric] || {title: t.metric, unit: "", aggregation: "avg"};
     const [vals] = await dayRows([t.metric]);
@@ -743,7 +824,8 @@ async function viewTrends() {
     h("div", {class: "filters", role: "group", "aria-label": "时间范围"}, RANGES.map(([n, l]) =>
       h("button", {type: "button", "aria-pressed": String(t.range === n), onclick: () => { t.range = n; rerender(); }}, l))),
     h("div", {class: "toolbar"},
-      h("div", {class: "filters", role: "group", "aria-label": "指标"}, TREND_METRICS.filter(([k]) => ["energy", "sleep"].includes(k) || metricMeta[k]).map(([k, l]) =>
+      h("div", {class: "filters", role: "group", "aria-label": "指标"}, TREND_METRICS.filter(([k]) => ["energy", "sleep"].includes(k) || metricMeta[k]
+        || k === "smoking" && (t.metric === k || smoking)).map(([k, l]) =>
         h("button", {type: "button", "aria-pressed": String(t.metric === k), onclick: () => { t.metric = k; rerender(); }}, l))),
       h("select", {"aria-label": "其他指标", onchange: e => { if (e.target.value) { t.metric = e.target.value; rerender(); } }},
         h("option", {value: ""}, "其他指标…"),
@@ -774,7 +856,7 @@ async function viewTrends() {
     legend = h("div", {class: "legend"}, h("span", null, h("i", {class: "line series-1"}), "摄入"), h("span", null, h("i", {class: "line series-2"}), "消耗（活动 + 静息）"));
     tableRows = rows.map(r => [label(r), yFmt(r.intake), yFmt(r.burned)]);
   } else if (kind === "bar") {
-    plot = chart(el => barChart(el, {label: title, unit, yFmt, color: "var(--series-1)", goal,
+    plot = chart(el => barChart(el, {label: title, unit, yFmt, color: "var(--series-1)", goal, goalLabel: t.metric === "smoking" ? "上限" : null,
       points: rows.map(r => ({label: shortDay(r.date), tip: label(r), y: r.value}))}));
     tableRows = rows.map(r => [label(r), yFmt(r.value)]);
   } else {
@@ -792,13 +874,16 @@ async function viewTrends() {
     h("div", {class: "chart-head"}, h("h2", null, title + (unit ? `（${unit}${week ? "，周平均" : ""}）` : week ? "（周平均）" : "")), stats),
     legend, plot, table);
 
-  const filled = days.filter(d => Object.keys(d.intake).length || ["steps", "active_kcal", "exercise_min", "sleep_hours", "resting_hr", "weight_kg"].some(k => d[k] != null));
+  const filled = days.filter(d => Object.keys(d.intake).length || d.cigarettes > 0
+    || ["steps", "active_kcal", "exercise_min", "sleep_hours", "resting_hr", "weight_kg"].some(k => d[k] != null));
   const overview = t.range <= 30 && filled.length ? card("每日概览", `${filled.length} 天有数据`, h("div", {class: "scroll-x"}, h("table", null,
-    h("thead", null, h("tr", null, ["日期", "摄入", "步数", "活动", "锻炼", "睡眠", "静息心率", "体重"].map((l, i) => h("th", {class: i ? "right" : null}, l)))),
+    h("thead", null, h("tr", null, ["日期", "摄入", "步数", "活动", "锻炼", "睡眠", "静息心率", "体重", smoking && "抽烟"].filter(Boolean)
+      .map((l, i) => h("th", {class: i ? "right" : null}, l)))),
     h("tbody", null, filled.slice().reverse().map(d => h("tr", {class: "clickable", onclick: () => { location.hash = d.date === state.today ? "#/today" : "#/day/" + d.date; }},
       h("td", null, relDay(d.date)), h("td", {class: "right"}, fmt(d.intake.kcal)), h("td", {class: "right"}, fmt(d.steps)),
       h("td", {class: "right"}, fmt(d.active_kcal)), h("td", {class: "right"}, fmt(d.exercise_min)), h("td", {class: "right"}, fmt(d.sleep_hours, 1)),
-      h("td", {class: "right"}, fmt(d.resting_hr)), h("td", {class: "right"}, fmt(d.weight_kg, 1)))))))) : null;
+      h("td", {class: "right"}, fmt(d.resting_hr)), h("td", {class: "right"}, fmt(d.weight_kg, 1)),
+      smoking ? h("td", {class: "right"}, fmt(d.cigarettes)) : null)))))) : null;
   return [head, chartCard, overview];
 }
 
@@ -872,7 +957,7 @@ function editFood(food) {
 
 const GOALS = [["kcal", "热量", "kcal"], ["protein_g", "蛋白质", "g"], ["fat_g", "脂肪", "g"], ["carbs_g", "碳水", "g"],
   ["steps", "步数", "步"], ["exercise_min", "锻炼", "分钟"], ["sleep_hours", "睡眠", "小时"], ["water_ml", "饮水", "ml"],
-  ["weight_kg", "目标体重", "kg"]];
+  ["weight_kg", "目标体重", "kg"], ["cigarettes_max", "抽烟上限", "根/天"]];
 const SCOPES = {read: "只读", write: "读写", admin: "管理"};
 
 async function viewSettings() {
@@ -883,10 +968,10 @@ async function viewSettings() {
     const el = form.elements, v = n => el[n].value.trim(), num = n => v(n) === "" ? null : Number(v(n));
     const list = n => v(n).split(/[、,，\n]+/).map(x => x.trim()).filter(Boolean);
     const newGoals = {...goals};
-    for (const [k] of GOALS) { if (num("goal_" + k) == null) delete newGoals[k]; else newGoals[k] = num("goal_" + k); }
+    for (const [k] of GOALS) newGoals[k] = num("goal_" + k);  // goals merge on the server; null drops one
     const body = {name: v("name") || null, birthday: v("birthday") || null, sex: v("sex") || null, height_cm: num("height_cm"),
       timezone: v("timezone") || null, currency: v("currency").toUpperCase() || null,
-      goals: Object.keys(newGoals).length ? newGoals : null,
+      goals: newGoals,
       diet: {...diet, allergies: list("allergies"), preferences: list("preferences"), avoid: list("avoid")}, notes: v("notes") || null};
     await guarded(() => api("/profile", {method: "PATCH", body}));
     await loadContext(); toast("已保存");
@@ -989,7 +1074,7 @@ async function copy(text) {
 
 // --- quick add ---------------------------------------------------------------------------------
 
-const ADD_KINDS = [["meal", "饮食"], ["weight", "体重"], ["water", "饮水"], ["mood", "心情"], ["journal", "日记"]];
+const ADD_KINDS = [["meal", "饮食"], ["weight", "体重"], ["water", "饮水"], ["smoking", "抽烟"], ["mood", "心情"], ["journal", "日记"]];
 
 function openAdd() {
   $("addError").hidden = true;
@@ -1003,6 +1088,8 @@ function openAdd() {
       field("备注", h("textarea", {name: "note", rows: 2}), "full")],
     weight: () => [field("体重（kg）", h("input", {type: "number", name: "value", step: "0.1", min: 20, max: 300, required: true})), when],
     water: () => [field("饮水（ml）", h("input", {type: "number", name: "value", step: "1", min: 1, value: 250, required: true})), when],
+    smoking: () => [field("根数", h("input", {type: "number", name: "count", min: 1, max: 100, step: 1, value: 1, required: true})), when,
+      field("场景（可选）", textInput("trigger", "", {placeholder: "饭后、压力大"}), "full"), field("备注", h("textarea", {name: "note", rows: 2}), "full")],
     mood: () => [field("心情（1 很差 – 10 很好）", h("input", {type: "number", name: "score", min: 1, max: 10, step: 1, value: 6, required: true})), when,
       field("情绪（顿号分隔）", textInput("emotions", "", {placeholder: "平静、有点累"}), "full"), field("备注", h("textarea", {name: "note", rows: 2}), "full")],
     journal: () => [field("标题（可选）", textInput("title", ""), "full"), when, h("span"), field("内容", h("textarea", {name: "text", rows: 6, required: true}), "full")],
@@ -1038,6 +1125,9 @@ async function submitAdd(e) {
     } else if (state.addKind === "weight" || state.addKind === "water") {
       const metric = state.addKind === "weight" ? ["body_mass", "kg"] : ["dietary_water", "mL"];
       await api("/samples", {method: "POST", body: {samples: [{metric: metric[0], value: Number(v("value")), unit: metric[1], start, source: "manual"}]}});
+    } else if (state.addKind === "smoking") {
+      await api("/records", {method: "POST", body: {category: "smoking", start, source: "manual", note: v("note") || null,
+        data: {count: Number(v("count")), ...(v("trigger") ? {trigger: v("trigger")} : {})}}});
     } else if (state.addKind === "mood") {
       const emotions = v("emotions").split(/[、,，\s]+/).filter(Boolean);
       await api("/records", {method: "POST", body: {category: "mood", start, source: "manual", note: v("note") || null,

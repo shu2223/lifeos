@@ -343,7 +343,8 @@ def public_router() -> APIRouter:
         return {
             "name": "lifeos", "version": __version__,
             "about": "The owner's personal records: meals, workouts, Apple Health, mood, "
-                     "diary, body measurements and anything else, stored on their own machine.",
+                     "diary, body measurements, smoking and anything else, stored on their own "
+                     "machine.",
             "api_root": f"{b}{API}", "manual": f"{b}{API}/manual",
             "openapi": f"{b}{API}/openapi.json",
             "auth": "Authorization: Bearer <token> on every /api/v1 call except this one",
@@ -672,7 +673,8 @@ def api_router() -> APIRouter:
     def get_profile(conn: Db, _: Reader):
         return {"profile": profile.get_all(conn), "recommended_keys": profile.RECOMMENDED_KEYS}
 
-    @r.patch("/profile", tags=["profile"], summary="Merge keys; null deletes a key")
+    @r.patch("/profile", tags=["profile"],
+             summary="Merge keys; null deletes a key; goals merge one level (null drops a goal)")
     def patch_profile(conn: Db, actor: Writer, body: dict[str, Any] = Body(
             ..., examples=[{"height_cm": 172, "goals": {"kcal": 2000, "protein_g": 110}}])):
         return {"profile": profile.patch(conn, body, actor.name)}

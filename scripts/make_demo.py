@@ -20,6 +20,7 @@ from lifeos.timeutil import iso, now, utc_now
 DAYS = 120
 WATCH = "apple_health:Apple Watch"
 rng = random.Random(7)
+smoke_rng = random.Random(11)  # its own stream, so the rest of the demo stays as it was
 
 # name, amount, unit, grams, kcal, protein, fat, carbs
 MENU = {
@@ -59,7 +60,8 @@ def main() -> None:
         raise SystemExit(f"{settings.home} already has records; use an empty LIFEOS_HOME")
     profile.patch(conn, {"name": "示例", "height_cm": 170, "timezone": "Asia/Tokyo", "currency": "JPY",
                          "goals": {"kcal": 2100, "protein_g": 110, "fat_g": 65, "carbs_g": 250,
-                                   "steps": 8000, "exercise_min": 30, "sleep_hours": 7.5}}, "demo")
+                                   "steps": 8000, "exercise_min": 30, "sleep_hours": 7.5,
+                                   "cigarettes_max": 6}}, "demo")
     tz = profile.timezone_of(conn)
     today = now(tz)
     stamp = utc_now()
@@ -179,6 +181,14 @@ def main() -> None:
                                       "external_id": f"demo-journal-{day}",
                                       "data": {"text": JOURNAL[back % len(JOURNAL)]}}, "claude-phone", tz,
                                log=False)
+            for k in range(max(0, smoke_rng.randint(5, 10) - (DAYS - back) // 30)):  # slowly cutting down
+                when = at(day, smoke_rng.randint(8, 22), smoke_rng.randint(0, 59), tz)
+                trigger = smoke_rng.choice(["饭后", "压力大", "和朋友", None, None, None])
+                if when <= today:
+                    records.upsert(conn, {"category": "smoking", "start": iso(when), "source": "manual",
+                                          "external_id": f"demo-smoke-{day}-{k}",
+                                          "data": {"count": 1, **({"trigger": trigger} if trigger else {})}},
+                                   "web", tz, log=False)
         conn.executemany(INSERT_SQL, rows)
     for name, amount, unit, grams, kcal, p, fat, c in [MENU["lunch"][0], MENU["breakfast"][0], MENU["dinner"][2]]:
         foods.create(conn, {"name": name, "serving": {"amount": amount, "unit": unit, "grams": grams},

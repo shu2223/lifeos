@@ -24,6 +24,8 @@ NUTRIENT_PROPS = {k: {"type": "number", "minimum": 0, "description": v}
 MEAL_TYPES = {"breakfast": "早餐", "lunch": "午餐", "dinner": "晚餐", "snack": "加餐",
               "late_night": "夜宵", "drink": "饮品", "other": "其他"}
 LEVEL_1_10 = {"type": "integer", "minimum": 1, "maximum": 10}
+SMOKING_KINDS = {"cigarette": "香烟", "heated": "加热烟", "e_cigarette": "电子烟", "cigar": "雪茄",
+                 "other": "其他"}
 
 _MEAL_ITEM = {
     "type": "object",
@@ -200,6 +202,31 @@ BUILTIN: dict[str, dict] = {
         "example": {"category": "medication",
                     "data": {"name": "维生素D", "dose": 1000, "unit": "IU", "kind": "supplement"}},
     },
+    "smoking": {
+        "title": "抽烟",
+        "description": (
+            "Cigarettes smoked. One record per occasion: count 1 for each cigarette as it "
+            "happens (the web page's +1 button writes these), or the number the user gives for "
+            "a stretch of time. The day's total is the sum of count, shown in /summary/day under "
+            "smoking; read it before writing a total for the day, so cigarettes the user already "
+            "tapped in are not counted twice."
+        ),
+        "schema": {
+            "type": "object",
+            "required": ["count"],
+            "properties": {
+                "count": {"type": "integer", "minimum": 1, "maximum": 100,
+                          "description": "cigarettes in this record"},
+                "kind": {"enum": list(SMOKING_KINDS),
+                         "description": "omit for ordinary cigarettes; heated = IQOS, glo ..."},
+                "brand": {"type": "string"},
+                "trigger": {"type": "string",
+                            "description": "what led to it, in the user's words: 饭后, 压力大, 喝酒 ..."},
+            },
+        },
+        "example": {"category": "smoking", "start": "2026-11-02T13:10:00+09:00",
+                    "data": {"count": 1, "trigger": "饭后"}},
+    },
     "symptom": {
         "title": "身体状况",
         "description": "A symptom or physical complaint. severity 1 (barely) to 10 (worst).",
@@ -314,6 +341,8 @@ def derive(conn, category: str, data: dict, start, end, warnings: list[str]) -> 
     elif category == "workout":
         if "duration_min" not in data and end is not None:
             data["duration_min"] = _round((end - start).total_seconds() / 60)
+    elif category == "smoking" and isinstance(data.get("count"), float):
+        data["count"] = int(data["count"])  # the schema already refused 1.5; keep 2.0 out of titles
     return data
 
 
@@ -332,6 +361,10 @@ def default_title(category: str, cat_title: str, data: dict) -> str:
         return f"运动：{' · '.join(b for b in bits if b)}"
     if category == "mood" and "score" in data:
         return f"心情 {data['score']}/10"
+    if category == "smoking" and "count" in data:
+        kind = data.get("kind")
+        return f"抽烟 {data['count']} 根" + (
+            f"（{SMOKING_KINDS[kind]}）" if kind in SMOKING_KINDS and kind != "cigarette" else "")
     for key in ("name", "text", "merchant"):
         if isinstance(data.get(key), str) and data[key]:
             return f"{cat_title}：{data[key][:40]}"

@@ -14,7 +14,7 @@ RECOMMENDED_KEYS = {
     "timezone": "IANA name, e.g. Asia/Tokyo; naive times and daily views use it",
     "currency": "default ISO 4217 code for expenses, e.g. JPY",
     "goals": "object, e.g. {kcal, protein_g, carbs_g, fat_g, steps, sleep_hours, water_ml, "
-             "weight_kg, exercise_min}",
+             "weight_kg, exercise_min, cigarettes_max}",
     "diet": "object: {preferences, allergies, avoid} - respected when estimating meals",
     "notes": "anything else agents should know about the user",
 }
@@ -44,8 +44,9 @@ def _check(key: str, value) -> None:
 
 
 def patch(conn, body: dict, actor: str, only_missing: bool = False, in_tx: bool = False) -> dict:
-    """Merge keys into the profile; a null value deletes the key. `only_missing` leaves keys
-    the user already set alone (imports use it)."""
+    """Merge keys into the profile; a null value deletes the key. `goals` merges one level down,
+    so an agent can set one goal without erasing the rest; a null goal removes that goal.
+    `only_missing` leaves keys the user already set alone (imports use it)."""
     if not isinstance(body, dict) or not body:
         raise bad_request("send a JSON object of profile keys")
     for k, v in body.items():
@@ -57,6 +58,8 @@ def patch(conn, body: dict, actor: str, only_missing: bool = False, in_tx: bool 
         for k, v in body.items():
             if only_missing and k in before and k not in DEFAULTS:
                 continue
+            if k == "goals" and v is not None:
+                v = {g: n for g, n in {**(before.get(k) or {}), **v}.items() if n is not None} or None
             if v is None:
                 conn.execute("DELETE FROM profile WHERE key = ?", (k,))
             else:

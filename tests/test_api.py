@@ -192,6 +192,73 @@ def test_summary_day(client):
     assert ctx["profile"]["goals"]["kcal"] == 2000 and ctx["timezone"] == "Asia/Tokyo"
 
 
+def test_smoking_daily_counts(client):
+    from datetime import datetime, timedelta
+
+    from lifeos.timeutil import now, zone
+    today = now(zone("Asia/Tokyo")).date()
+    day = lambda n: (today - timedelta(days=n)).isoformat()  # noqa: E731
+    client.patch("/api/v1/profile", json={"goals": {"cigarettes_max": 5}})
+    post = lambda **body: client.post("/api/v1/records", json={"category": "smoking", **body})  # noqa: E731
+    assert client.get("/api/v1/summary/day").json()["smoking"] is None  # not tracking yet
+    assert post(start=f"{day(3)}T20:00:00+09:00", data={"count": 3}).status_code == 201
+    for clock in ("09:00", "13:00"):
+        post(start=f"{day(1)}T{clock}:00+09:00", data={"count": 1})
+    tap = post(source="manual", data={"count": 1}).json()["record"]  # the web page's +1
+    assert tap["title"] == "抽烟 1 根" and tap["local_date"] == today.isoformat()
+    extra = post(source="manual", data={"count": 1}).json()["record"]
+    heated = post(start=f"{today}T00:05:00+09:00", data={"count": 2, "kind": "heated"})
+    assert heated.json()["record"]["title"] == "抽烟 2 根（加热烟）"
+    client.delete(f"/api/v1/records/{extra['id']}")  # the −1 button
+    assert post(data={"count": 0}).status_code == 422
+    assert post(data={"kind": "cigarette"}).status_code == 422
+
+    d = client.get("/api/v1/summary/day").json()
+    sm = d["smoking"]
+    assert sm["cigarettes"] == 3 and sm["daily_max"] == 5 and sm["yesterday"] == 2
+    assert sm["avg_prev_7d"] == round((3 + 0 + 2) / 3, 1)  # the smoke-free day counts as 0
+    assert sm["tracking_since"] == day(3)
+    assert sorted(e["count"] for e in sm["entries"]) == [1, 2]
+    assert sm["last_at"] == max((e["start"] for e in sm["entries"]), key=datetime.fromisoformat)
+    assert all(r["category"] != "smoking" for r in d["other_records"])
+    assert client.get("/api/v1/summary/day", params={"date": day(4)}).json()["smoking"] is None
+    past = client.get("/api/v1/summary/day", params={"date": day(2)}).json()["smoking"]
+    assert past["cigarettes"] == 0 and past["entries"] == [] and past["yesterday"] == 3
+    assert past["last_at"] == f"{day(3)}T20:00:00+09:00"
+
+    tomorrow = (today + timedelta(days=1)).isoformat()
+    rows = client.get("/api/v1/summary/days", params={"from": day(5), "to": tomorrow}).json()
+    assert [r.get("cigarettes") for r in rows["days"]] == [None, None, 3, 0, 2, 3, None]
+    ctx = client.get("/api/v1/context").json()
+    assert ctx["today_summary"]["smoking"]["cigarettes"] == 3
+    assert "smoking" in [c["name"] for c in ctx["categories"]]
+    assert client.get("/api/v1/summary/day", params={"date": "0001-01-03"}).status_code == 200
+
+
+def test_smoking_edge_cases(client):
+    from datetime import timedelta
+
+    from lifeos.timeutil import iso, now, zone
+    rec = client.post("/api/v1/records", json={"category": "smoking", "data": {"count": 2.0}})
+    assert rec.json()["record"]["title"] == "抽烟 2 根" and rec.json()["record"]["data"]["count"] == 2
+    t = now(zone("Asia/Tokyo"))
+    later = t + timedelta(hours=1)
+    client.post("/api/v1/records", json={"category": "smoking", "start": iso(later), "data": {"count": 3}})
+    sm = client.get("/api/v1/summary/day").json()["smoking"]
+    if later.date() == t.date():  # an entry timed later today is counted but is not the last one yet
+        assert sm["cigarettes"] == 5 and sm["last_at"] == rec.json()["record"]["start"]
+
+
+def test_goals_merge(client):
+    client.patch("/api/v1/profile", json={"goals": {"kcal": 2000, "steps": 8000}})
+    goals = client.patch("/api/v1/profile", json={"goals": {"cigarettes_max": 8}}).json()["profile"]["goals"]
+    assert goals == {"kcal": 2000, "steps": 8000, "cigarettes_max": 8}
+    goals = client.patch("/api/v1/profile", json={"goals": {"steps": None}}).json()["profile"]["goals"]
+    assert goals == {"kcal": 2000, "cigarettes_max": 8}
+    prof = client.patch("/api/v1/profile", json={"goals": {"kcal": None, "cigarettes_max": None}})
+    assert "goals" not in prof.json()["profile"]
+
+
 def test_attachments(client):
     rec = client.post("/api/v1/records", json=MEAL).json()["record"]
     r = client.post(f"/api/v1/records/{rec['id']}/attachments", params={"filename": "a.jpg"},

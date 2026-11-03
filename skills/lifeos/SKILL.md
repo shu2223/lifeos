@@ -1,6 +1,6 @@
 ---
 name: lifeos
-description: Record and look up the user's personal life data in lifeos, their self-hosted records service — meals and calories, drinks and water, workouts, weight and body measurements, sleep, mood, diary, symptoms, medication, spending, Apple Health and Apple Fitness data. Use whenever the user mentions eating or drinking something ("我今天吃了…", "喝了杯咖啡"), exercising, weighing themselves, how they slept or feel, or asks about their own intake, activity, health trends or habits.
+description: Record and look up the user's personal life data in lifeos, their self-hosted records service — meals and calories, drinks and water, workouts, weight and body measurements, sleep, mood, diary, symptoms, medication, spending, cigarettes smoked, Apple Health and Apple Fitness data. Use whenever the user mentions eating or drinking something ("我今天吃了…", "喝了杯咖啡"), exercising, weighing themselves, smoking ("抽了根烟"), how they slept or feel, or asks about their own intake, activity, health trends or habits.
 ---
 
 # lifeos: the user's personal records
@@ -44,11 +44,11 @@ Paths in the table are relative to `$LIFEOS_URL`.
 |---|---|
 | `GET /context` | start here: current time, timezone, profile and goals, today so far, frequent foods |
 | `GET /foods?q=牛肉面` | the user's food library |
-| `POST /records` | a meal, workout, mood, diary entry, symptom, medication or expense |
+| `POST /records` | a meal, workout, mood, diary entry, symptom, medication, expense or cigarette |
 | `PATCH /records/{id}` | fix a record; `data` is merged and arrays are replaced |
 | `DELETE /records/{id}` | remove a record (it can be restored) |
 | `POST /samples` | numbers such as weight or water: `{"samples": [{"metric": "body_mass", "value": 61.8}]}` |
-| `GET /summary/day` | today's intake against goals, plus steps, sleep and workouts |
+| `GET /summary/day` | today's intake against goals, plus steps, sleep, workouts and cigarettes (`smoking`) |
 | `GET /records/{id}/series` | a workout's heart-rate curve, recovery, cadence, power (`?points=false` for stats only) |
 
 ## How to behave
@@ -64,6 +64,9 @@ Paths in the table are relative to `$LIFEOS_URL`.
   `POST /foods`.
 - Fix mistakes with `PATCH`. Remove duplicates with `DELETE`. Never write a second record to
   fix the first.
+- Cigarettes: one `smoking` record per occasion, `{"count": 1}` for "抽了一根". The user
+  also taps +1 on their web page, so for "今天一共抽了10根" read `smoking.cigarettes` from
+  `GET /summary/day` and add only the difference. Never lecture about smoking.
 - Workouts, steps, sleep and heart rate from Apple Watch arrive automatically, so don't enter
   them again. Add what the user tells you to the existing record instead.
 - After writing, confirm in one short line in the user's language, with the key numbers and

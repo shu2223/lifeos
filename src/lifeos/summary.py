@@ -6,6 +6,7 @@ from .categories import NUTRIENTS
 from .db import loads
 from .errors import bad_request
 from .metrics import SLEEP_ASLEEP
+from .timeutil import now
 
 DAY_METRICS = {
     "steps": "step_count",
@@ -51,6 +52,54 @@ def _sleep(conn, d_from: str, d_to: str) -> dict[str, dict]:
             v["asleep_min"] = asleep
             v["asleep_hours"] = round(asleep / 60, 2)
     return out
+
+
+def _smoking_since(conn) -> str | None:
+    return conn.execute("SELECT MIN(local_date) FROM records WHERE category = 'smoking'"
+                        " AND deleted_at IS NULL").fetchone()[0]
+
+
+def _cigarettes(conn, d_from: str, d_to: str, since: str | None) -> dict[str, int]:
+    """Cigarettes per local day. From the first day anything was logged up to today, a day with
+    no entries counts as 0 (smoke-free); before that there is no data."""
+    if since is None:
+        return {}
+    out = {r["local_date"]: round(r["n"]) for r in conn.execute(
+        "SELECT local_date, SUM(COALESCE(json_extract(data, '$.count'), 1)) AS n FROM records"
+        " WHERE category = 'smoking' AND deleted_at IS NULL AND local_date BETWEEN ? AND ?"
+        " GROUP BY local_date", (d_from, d_to))}
+    day = max(date.fromisoformat(since), date.fromisoformat(d_from))
+    last = min(date.fromisoformat(d_to), now(profile.timezone_of(conn)).date())
+    while day <= last:
+        out.setdefault(day.isoformat(), 0)
+        day += timedelta(days=1)
+    return out
+
+
+def _smoking(conn, d: str, recs: list[dict], goals: dict) -> dict | None:
+    since = _smoking_since(conn)
+    if since is None or d < since:
+        return None
+    counts = _cigarettes(conn, (date.fromisoformat(d) - timedelta(days=7)).isoformat(), d, since)
+    if d not in counts:
+        return None
+    before = [n for k, n in counts.items() if k < d]
+    # an entry an agent timed later today has not happened yet
+    last = conn.execute("SELECT start_at FROM records WHERE category = 'smoking'"
+                        " AND deleted_at IS NULL AND local_date <= ? AND start_ts <= ?"
+                        " ORDER BY start_ts DESC LIMIT 1",
+                        (d, now(profile.timezone_of(conn)).timestamp())).fetchone()
+    return {
+        "cigarettes": counts[d],
+        "daily_max": goals.get("cigarettes_max"),
+        "yesterday": counts.get((date.fromisoformat(d) - timedelta(days=1)).isoformat()),
+        "avg_prev_7d": round(sum(before) / len(before), 1) if before else None,
+        "last_at": last["start_at"] if last else None,
+        "tracking_since": since,
+        "entries": [{"id": r["id"], "start": r["start"], "count": r["data"].get("count", 1),
+                     **{k: r["data"][k] for k in ("kind", "trigger") if k in r["data"]}}
+                    for r in recs if r["category"] == "smoking"],
+    }
 
 
 def _sum_nutrients(meals: list[dict]) -> dict:
@@ -107,11 +156,12 @@ def day(conn, d: str) -> dict:
                          if r["data"].get(k) is not None}}
                      for r in recs if r["category"] == "workout"],
         "body": body,
+        "smoking": _smoking(conn, d, recs, goals),
         "goals": goals,
         "other_records": [{"id": r["id"], "category": r["category"], "start": r["start"],
                            "title": r["title"]}
                           for r in recs if r["category"] not in
-                          ("meal", "workout", "activity_summary")],
+                          ("meal", "workout", "activity_summary", "smoking")],
     }
 
 
@@ -137,6 +187,7 @@ def days(conn, d_from: str, d_to: str) -> dict:
     metric_days = {k: _metric_days(conn, n, d_from, d_to) for k, n in picked.items()}
     weight = _metric_days(conn, "body_mass", d_from, d_to)
     sleep = _sleep(conn, d_from, d_to)
+    smoked = _cigarettes(conn, d_from, d_to, _smoking_since(conn))
     rows = []
     for i in range((end - start).days + 1):
         d = (start + timedelta(days=i)).isoformat()
@@ -146,5 +197,7 @@ def days(conn, d_from: str, d_to: str) -> dict:
             row["weight_kg"] = weight[d]["value"]
         if sleep.get(d, {}).get("asleep_hours"):
             row["sleep_hours"] = sleep[d]["asleep_hours"]
+        if d in smoked:
+            row["cigarettes"] = smoked[d]
         rows.append(row)
     return {"from": d_from, "to": d_to, "days": rows}
