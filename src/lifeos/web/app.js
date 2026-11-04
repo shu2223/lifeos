@@ -668,12 +668,15 @@ function recordRows(recs, opts = {}) {
     const side = recordSide(rec);
     const label = opts.mealLabel ? (MEAL[rec.data?.meal_type] || "饮食") : null;
     const title = opts.mealLabel ? (rec.data.items || []).map(i => i.name).join("、") || rec.title : shortTitle(rec);
+    // Items without kcal count as 0 in the totals, so say so rather than show a short total as if it were whole.
+    const noKcal = rec.category === "meal" ? (rec.data?.items || []).filter(i => typeof i.kcal !== "number").length : 0;
     return h("li", null, h("button", {class: "row" + (rec.deleted_at ? " deleted" : ""), type: "button", onclick: () => openRecord(rec.id)},
       h("span", {class: "time"}, clock(rec.start), opts.range && rec.end ? h("br") : null, opts.range && rec.end ? clock(rec.end) : null),
       h("span", {class: "main"},
         h("span", {class: "title"}, opts.chip ? h("span", {class: "chip"}, catTitle(rec.category)) : null,
           label ? h("span", {class: "chip"}, label) : null, title),
-        recordSub(rec) ? h("span", {class: "sub"}, recordSub(rec)) : null),
+        recordSub(rec) || noKcal ? h("span", {class: "sub"}, recordSub(rec), noKcal && recordSub(rec) ? " · " : null,
+          noKcal ? h("span", {class: "warn"}, `${noKcal} 项未填热量`) : null) : null),
       side ? h("span", {class: "side"}, side[0], h("span", {class: "unit"}, side[1])) : h("span")));
   }));
 }

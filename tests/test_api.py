@@ -50,6 +50,76 @@ def test_meal_without_kcal_warns(client):
     assert "no kcal" in r.json()["warnings"][0]
 
 
+def test_meal_item_nutrient_aliases_count(client):
+    # An agent wrote "calories" on each item; the totals used to show only what a food_id filled.
+    body = {**MEAL, "data": {"calories": 784, "items": [
+        {"name": "披萨", "calories": 650, "protein": 24, "Fat": 26, "carbohydrates": 78},
+        {"name": "米饭", "kcal": 134, "calories": 999, "carbs_g": 29.6},
+    ]}}
+    r = client.post("/api/v1/records", json=body)
+    assert r.status_code == 201, r.text
+    data = r.json()["record"]["data"]
+    assert data["items"][0] == {"name": "披萨", "kcal": 650, "protein_g": 24, "fat_g": 26, "carbs_g": 78}
+    assert data["items"][1] == {"name": "米饭", "kcal": 134, "carbs_g": 29.6}
+    assert data["totals"] == {"kcal": 784, "protein_g": 24, "fat_g": 26, "carbs_g": 107.6}
+    assert "calories" not in data
+    w = r.json()["warnings"]
+    assert "items[0] 披萨: read calories as kcal; send kcal next time" in w
+    assert "items[1] 米饭: dropped calories, kcal is already given" in w
+    assert "dropped data.calories: only the items' nutrients count, and the server sums them into data.totals" in w
+    assert not any("no kcal" in x for x in w)
+    summary = client.get("/api/v1/summary/day?date=2026-11-02").json()
+    assert summary["nutrition"]["intake"]["kcal"] == 784
+
+    patch = {"data": {"items": [{"name": "披萨", "calories": 325}]}}
+    r = client.patch(f"/api/v1/records/{r.json()['record']['id']}", json=patch)
+    assert r.status_code == 200, r.text
+    assert r.json()["record"]["data"]["totals"] == {"kcal": 325}
+    assert r.json()["warnings"] == ["items[0] 披萨: read calories as kcal; send kcal next time"]
+
+    coffee = client.post("/api/v1/records", json={**MEAL, "data": {"items": [
+        {"name": "黑咖啡", "kcal": 5, "sugar": False, "Kcal": "5", "brand": "7-Eleven"}]}})
+    assert coffee.status_code == 201, coffee.text
+    assert coffee.json()["record"]["data"]["items"][0] == {
+        "name": "黑咖啡", "kcal": 5, "sugar": False, "brand": "7-Eleven"}
+
+
+def test_meal_item_numbers_that_would_not_count_are_refused(client):
+    def post(item):
+        return client.post("/api/v1/records", json={**MEAL, "data": {"items": [{"name": "披萨", **item}]}})
+    # Under an alias, a string or a negative number fails just as it would under kcal.
+    for item in ({"calories": -5}, {"calories": "650"}, {"calories": "650 kcal"}):
+        r = post(item)
+        assert r.status_code == 422 and "['kcal']" in r.json()["error"]["message"], item
+    # A number under a name the server does not know would be stored and left out of the totals.
+    for item, key in (({"energy": 650}, "energy"), ({"热量": 650, "kcal": 650}, "热量"),
+                      ({"nutrition": {"calories": 650}}, "nutrition")):
+        r = post(item)
+        assert r.status_code == 422, item
+        err = r.json()["error"]
+        assert err["message"] == f"data['items'][0][{key!r}]: not a meal item field, so it would not count"
+        assert "kcal, protein_g" in err["hint"]
+
+
+def test_meal_totals_sent_by_the_caller_are_flagged(client):
+    rec = client.post("/api/v1/records", json=MEAL).json()["record"]
+    # Patching the total instead of the items changes nothing, so the agent has to hear about it.
+    r = client.patch(f"/api/v1/records/{rec['id']}", json={"data": {"totals": {"kcal": 1197}}})
+    assert r.status_code == 200 and r.json()["record"]["data"]["totals"]["kcal"] == 710
+    assert r.json()["warnings"] == ["data.totals is computed from the items, which add up to 710 kcal; "
+                                    "the totals sent were not used. Put the nutrients on each item"]
+    # Sending back the record as it was read, totals and all, is not a mistake.
+    r = client.patch(f"/api/v1/records/{rec['id']}", json={"data": rec["data"]})
+    assert r.json()["warnings"] == []
+    body = {**MEAL, "external_id": "m1", "data": {**MEAL["data"], "total_kcal": 710}}
+    first = client.post("/api/v1/records", json=body).json()
+    assert first["warnings"] == ["dropped data.total_kcal: only the items' nutrients count, "
+                                 "and the server sums them into data.totals"]
+    assert "total_kcal" not in first["record"]["data"]
+    again = client.post("/api/v1/records", json={**MEAL, "external_id": "m1", "data": first["record"]["data"]})
+    assert again.status_code == 200 and again.json()["warnings"] == []
+
+
 def test_schema_violation_and_unknown_field(client):
     r = client.post("/api/v1/records", json={"category": "meal", "data": {"items": []}})
     assert r.status_code == 422

@@ -77,11 +77,17 @@ def _prepared(conn, body: dict, tz, warnings: list[str]) -> dict:
     data = copy.deepcopy(body.get("data") or {})
     if not isinstance(data, dict):
         raise bad_request("data must be a JSON object")
+    sent_totals = None
     if cat["name"] == "meal":
-        data.pop("totals", None)
+        sent_totals = data.pop("totals", None)
+        cats.canonical_meal(data, warnings)
     start, end = _times(body, tz)
     _validate(cat, data)
     data = cats.derive(conn, cat["name"], data, start, end, warnings)
+    if isinstance(sent_totals, dict) and any(v != data["totals"].get(k) for k, v in sent_totals.items()):
+        warnings.append(f"data.totals is computed from the items, which add up to "
+                        f"{data['totals'].get('kcal', 0):g} kcal; the totals sent were not used. "
+                        "Put the nutrients on each item")
     tags = body.get("tags") or []
     if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
         raise bad_request("tags must be a list of strings")
@@ -92,6 +98,12 @@ def _prepared(conn, body: dict, tz, warnings: list[str]) -> dict:
         "local_date": body.get("local_date") or start.date().isoformat(), "title": title,
         "data": dumps(data), "tags": dumps(tags), "note": body.get("note") or "",
     }
+
+
+def _own_data(rec: dict) -> dict:
+    """A stored record's data without what the server derives, to merge new input into: any
+    meal totals in the result were then sent by the caller."""
+    return {k: v for k, v in rec["data"].items() if not (rec["category"] == "meal" and k == "totals")}
 
 
 def get(conn, record_id: str, with_attachments: bool = True) -> dict:
@@ -127,7 +139,7 @@ def upsert(conn, body: dict, actor: str, tz, *, log: bool = True) -> tuple[dict,
         auto_title = cats.default_title(cat["name"], cat["title"], before["data"])
         f = _prepared(conn, {
             **body,
-            "data": {**before["data"], **(body.get("data") or {})},
+            "data": {**_own_data(before), **(body.get("data") or {})},
             "note": body.get("note") or before["note"],
             "tags": body.get("tags") or before["tags"],
             "title": body.get("title") or ("" if before["title"] == auto_title
@@ -192,7 +204,7 @@ def update(conn, record_id: str, patch: dict, actor: str, tz) -> tuple[dict, lis
             "category": patch.get("category", before["category"]),
             "start": patch.get("start", before["start"]),
             "end": patch["end"] if "end" in patch else before["end"],
-            "data": merge_patch(before["data"], patch.get("data", {})),
+            "data": merge_patch(_own_data(before), patch.get("data", {})),
             "tags": patch.get("tags", before["tags"]),
             "note": patch.get("note", before["note"]),
             "title": patch.get("title", "" if before["title"] == auto_title else before["title"]),

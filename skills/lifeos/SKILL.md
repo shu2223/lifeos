@@ -57,6 +57,10 @@ Paths in the table are relative to `$LIFEOS_URL`.
   record in a single turn. Estimate grams, kcal, protein, fat and carbs for each item, and
   mark them `estimated` with a `confidence`. Ask a question only if any guess would be wildly
   off.
+- Put the nutrients on each item under these exact keys: `kcal`, `protein_g`, `fat_g`,
+  `carbs_g` (not `calories` or `protein`). The server adds them up into the meal's totals.
+- Read `warnings` in every write response. Fix with `PATCH` what they say is missing, such as
+  an item with no `kcal`, and use the keys they name next time.
 - Take the date and time from `GET /context`, not from your own sense of the date.
   Times without an offset are read in the user's timezone.
 - Check `frequent_foods` and `GET /foods?q=` first, so foods the user eats often get

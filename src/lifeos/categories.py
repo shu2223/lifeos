@@ -5,6 +5,8 @@ Some categories have server-side derivation (meal totals, workout duration) in `
 """
 import json
 
+from .errors import ApiError
+
 NUTRIENTS = {
     "kcal": "energy (kcal)",
     "protein_g": "protein (g)",
@@ -21,6 +23,15 @@ NUTRIENTS = {
 }
 NUTRIENT_PROPS = {k: {"type": "number", "minimum": 0, "description": v}
                   for k, v in NUTRIENTS.items()}
+# Names agents write instead of the keys above, matched without case. They are renamed on write,
+# so an item's "calories": 650 counts toward the totals instead of being stored and ignored.
+NUTRIENT_ALIASES = {
+    "calories": "kcal", "calorie": "kcal", "cal": "kcal", "kcals": "kcal", "energy_kcal": "kcal",
+    "protein": "protein_g", "fat": "fat_g", "carbs": "carbs_g", "carb": "carbs_g",
+    "carbohydrate": "carbs_g", "carbohydrates": "carbs_g", "carbohydrate_g": "carbs_g",
+    "carbohydrates_g": "carbs_g", "fiber": "fiber_g", "fibre": "fiber_g", "fibre_g": "fiber_g",
+    "sugar": "sugar_g", "sugars": "sugar_g", "sugars_g": "sugar_g",
+}
 MEAL_TYPES = {"breakfast": "早餐", "lunch": "午餐", "dinner": "晚餐", "snack": "加餐",
               "late_night": "夜宵", "drink": "饮品", "other": "其他"}
 LEVEL_1_10 = {"type": "integer", "minimum": 1, "maximum": 10}
@@ -279,6 +290,58 @@ def _round(x: float) -> float:
 def _scaled(nutrients: dict, factor: float) -> dict:
     return {k: _round(v * factor) for k, v in nutrients.items()
             if k in NUTRIENTS and isinstance(v, (int, float))}
+
+
+def _nutrient_key(key: str, value) -> str | None:
+    """The NUTRIENTS key that `key` stands for, if `value` was meant as an amount. "650" and
+    "650 kcal" were, and then fail validation as kcal does; "sugar": false on a coffee was not."""
+    if value is None or isinstance(value, bool) or (
+            isinstance(value, str) and not any(c.isdigit() for c in value)):
+        return None
+    low = key.lower()
+    return low if low in NUTRIENTS else NUTRIENT_ALIASES.get(low)
+
+
+def canonical_nutrients(d: dict) -> list[tuple[str, str, bool]]:
+    """Rename nutrient aliases in `d` to their NUTRIENTS key. Returns (alias, key, used) for each;
+    when `d` already has the key, its value wins and the alias is dropped unused."""
+    renamed = []
+    for key in list(d):
+        to = _nutrient_key(key, d[key])
+        if to is None or to == key:
+            continue
+        value = d.pop(key)
+        renamed.append((key, to, to not in d))
+        d.setdefault(to, value)
+    return renamed
+
+
+def canonical_meal(data: dict, warnings: list[str]) -> None:
+    """Meal input as agents write it, before validation: item nutrients under their own names.
+
+    Only item nutrients count, and agents skip warnings, so a number on an item under a name
+    the server does not know (energy, 热量, a nested nutrition object) is refused rather than
+    stored and left out of the totals."""
+    items = data.get("items")
+    for i, item in enumerate(items if isinstance(items, list) else []):
+        if not isinstance(item, dict):
+            continue
+        label = f"items[{i}] {item.get('name', '')}"
+        for key, to, used in canonical_nutrients(item):
+            warnings.append(f"{label}: read {key} as {to}; send {to} next time" if used
+                            else f"{label}: dropped {key}, {to} is already given")
+        for key, value in item.items():
+            if key not in _MEAL_ITEM["properties"] and (
+                    isinstance(value, dict) or isinstance(value, (int, float)) and not isinstance(value, bool)):
+                raise ApiError(422, "invalid_data",
+                               f"data['items'][{i}][{key!r}]: not a meal item field, so it would not count",
+                               f"nutrients go on each item as {', '.join(NUTRIENTS)}; how much as "
+                               "amount, unit and grams. GET /api/v1/categories/meal shows the schema")
+    for key in [k for k, v in data.items()
+                if _nutrient_key(k.lower().removeprefix("total_").removesuffix("_total"), v)]:
+        del data[key]
+        warnings.append(f"dropped data.{key}: only the items' nutrients count, and the server sums "
+                        "them into data.totals")
 
 
 def fill_from_food(item: dict, food: dict, warnings: list[str], label: str) -> None:

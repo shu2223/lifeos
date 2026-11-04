@@ -158,6 +158,13 @@ The response is `{"record": {...}, "warnings": [...], "created": true}`.
 Nutrient keys, used everywhere: `kcal`, `protein_g`, `fat_g`, `carbs_g`, `fiber_g`, `sugar_g`,
 `saturated_fat_g`, `sodium_mg` (salt in grams × 393), `cholesterol_mg`, `caffeine_mg`,
 `alcohol_g`, `water_ml`.
+Only these keys on the items count toward `data.totals`:
+- `calories`, `protein`, `carbs` and similar names on an item are renamed to these keys, with a
+  warning. Send the keys above anyway.
+- A number on an item under any other name, such as `energy`, `热量` or a nested `nutrition`
+  object, is refused with a 422, because it would not count.
+- Nutrients at the meal level (`data.calories`, `data.total_kcal`) are dropped with a warning,
+  and a `data.totals` you send is replaced by the computed one.
 
 ### 6.2 Correct a meal
 
