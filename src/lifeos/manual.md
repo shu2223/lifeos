@@ -142,8 +142,18 @@ The response is `{"record": {...}, "warnings": [...], "created": true}`.
 - `warnings` flags problems such as an item with no `kcal`. Fix them with a PATCH.
 
 4. **Reuse foods.** If a library food matches, reference it and let the server compute the
-   nutrients: `{"name": "牛肉面", "food_id": "food_...", "amount": 1, "unit": "碗"}`, or give
-   `grams` to scale `per_100g`. You may still override any nutrient explicitly.
+   nutrients. Say how much with an `amount` and `unit`, in one of these ways:
+   - in the food's own serving unit: `{"name": "牛肉面", "food_id": "food_...", "amount": 1,
+     "unit": "碗"}`, or in `ml`/`l` for a serving in ml;
+   - `"unit": "份"` with the number of servings;
+   - a weight: `"amount": 200, "unit": "g"` (also `kg`, `克`, `斤`, `两`), or `grams` alone.
+
+   The amount decides. `grams` you add beside an amount that matches the food are kept as your
+   estimate, with a warning when they disagree with it; they decide only when the amount
+   can't be matched. An amount with no unit counts servings only when a serving is one unit
+   (1 碗); for a food saved per 400 g it is ambiguous. When the server can't tell how much was
+   eaten and the item has no `kcal` of its own, it returns 422 and says what to send. You may
+   still override any nutrient explicitly.
 5. **Grow the library** when the user gives exact numbers (from a package label) or names a
    food they clearly eat often: `POST /api/v1/foods`.
 
@@ -176,8 +186,11 @@ PATCH {BASE}/api/v1/records/rec_...
 ```
 
 `data` is a JSON merge patch: objects merge, `null` deletes a key, and **arrays replace**, so
-always send the complete `items` list. The server recomputes the totals. To remove a record,
-use `DELETE /records/{id}`; `POST /records/{id}/restore` undoes it.
+always send the complete `items` list. The server recomputes the totals. For an item with a
+`food_id`, send it back as you read it and change only `amount`: its grams and nutrients are
+scaled to the new amount, and any number you change in the same request is kept as sent.
+After a change of unit or food, the numbers that matched the old food are computed again.
+To remove a record, use `DELETE /records/{id}`; `POST /records/{id}/restore` undoes it.
 
 ### 6.3 Weight, water and other measurements
 

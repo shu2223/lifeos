@@ -192,6 +192,241 @@ def test_food_library_fills_items(client):
     assert bad.status_code == 400 and "kcal" in bad.json()["error"]["hint"]
 
 
+def _food(client, **food):
+    r = client.post("/api/v1/foods", json={"name": "f", **food})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _eat(client, *items):
+    return client.post("/api/v1/records", json={"category": "meal", "start": "2026-11-02T08:00:00+09:00",
+                                                "data": {"items": [{"name": "f", **i} for i in items]}})
+
+
+def test_food_amounts_match_the_food_serving(client):
+    # Foods saved per a gram serving: a bare amount 1 used to be read as 1 g (0.4 kcal for a tub).
+    tub = _food(client, serving={"amount": 400, "unit": "g", "grams": 400}, per_serving={"kcal": 152})
+    for item, grams, kcal in (({"amount": 1, "unit": "份"}, 400, 152), ({"amount": 200, "unit": "g"}, 200, 76),
+                              ({"grams": 200}, 200, 76), ({"amount": 0.2, "unit": "KG"}, 200, 76),
+                              ({"amount": 200, "unit": "克"}, 200, 76), ({}, 400, 152)):
+        r = _eat(client, {"food_id": tub, **item})
+        assert r.status_code == 201, (item, r.text)
+        got = r.json()["record"]["data"]["items"][0]
+        assert (got["grams"], got["kcal"]) == (grams, kcal), item
+    r = _eat(client, {"food_id": tub, "amount": 1})
+    assert r.status_code == 422 and "send unit '份' to count servings" in r.json()["error"]["message"]
+    for item in ({"amount": 1, "unit": "盒"}, {"unit": "盒"}):
+        r = _eat(client, {"food_id": tub, **item})
+        assert r.status_code == 422 and "unit '份' for servings" in r.json()["error"]["message"], item
+    r = _eat(client, {"food_id": tub, "amount": 1, "unit": "盒", "kcal": 150})  # its own numbers count
+    assert r.status_code == 201 and "cannot be matched" in r.json()["warnings"][0]
+
+    # A serving that is one unit: a bare amount counts them, and grams alone scale it.
+    bowl = _food(client, serving={"amount": 1, "unit": "碗", "grams": 150}, per_serving={"kcal": 230})
+    for item, grams, kcal, unit in (({"amount": 2}, 300, 460, "碗"), ({"grams": 300}, 300, 460, None),
+                                    ({"unit": "碗"}, 150, 230, "碗")):
+        got = _eat(client, {"food_id": bowl, **item}).json()["record"]["data"]["items"][0]
+        assert (got["grams"], got["kcal"], got.get("unit")) == (grams, kcal, unit), item
+    # The amount is what the user said; grams beside it are an estimate, flagged when they disagree.
+    r = _eat(client, {"food_id": bowl, "amount": 1, "unit": "碗", "grams": 300})
+    assert r.json()["record"]["data"]["items"][0]["kcal"] == 230
+    assert r.json()["warnings"] == ["items[0] f: grams 300 do not match 1 碗 (150 g); the nutrients follow the amount"]
+
+    # The food's own unit is matched before any conversion, and grams don't block a matched amount.
+    loaf = _food(client, serving={"amount": 1, "unit": "斤", "grams": 340}, per_serving={"kcal": 900})
+    got = _eat(client, {"food_id": loaf, "amount": 1, "unit": "斤"}).json()["record"]["data"]["items"][0]
+    assert (got["grams"], got["kcal"]) == (340, 900)
+    noodles = _food(client, serving={"amount": 1, "unit": "碗"}, per_serving={"kcal": 620, "protein_g": 30})
+    got = _eat(client, {"food_id": noodles, "amount": 1, "unit": "碗", "grams": 550}).json()["record"]["data"]["items"][0]
+    assert (got["kcal"], got["protein_g"]) == (620, 30)
+    milk = _food(client, serving={"amount": 200, "unit": "ml"}, per_serving={"kcal": 92})
+    for unit, amount in (("mL", 250), ("L", 0.25), ("毫升", 250)):
+        got = _eat(client, {"food_id": milk, "amount": amount, "unit": unit, "grams": 250}).json()["record"]["data"]["items"][0]
+        assert got["kcal"] == 115, unit
+
+    # A weight is a weight, also against a serving in 斤; only the serving's own unit counts servings.
+    for item, grams, kcal in (({"amount": 120, "unit": "g"}, 120, 317.6), ({"amount": 0.5, "unit": "kg"}, 500, 1323.5),
+                              ({"amount": 2, "unit": "两"}, 100, 264.7)):
+        got = _eat(client, {"food_id": loaf, **item}).json()["record"]["data"]["items"][0]
+        assert (got["grams"], got["kcal"]) == (grams, kcal), item
+    r = _eat(client, {"food_id": tub, "unit": "g"})
+    assert r.status_code == 422 and "needs an amount" in r.json()["error"]["message"]
+
+    # When the amount can't be turned into a weight, the item's own grams are used.
+    chicken = _food(client, per_100g={"kcal": 165})
+    bowl_100g = _food(client, serving={"amount": 1, "unit": "碗"}, per_100g={"kcal": 156})
+    milk_100g = _food(client, serving={"amount": 200, "unit": "ml"}, per_100g={"kcal": 46})
+    for food, item, kcal in ((chicken, {"amount": 1, "grams": 150}, 247.5), (chicken, {"amount": 1, "unit": "份", "grams": 150}, 247.5),
+                             (bowl_100g, {"amount": 1, "unit": "碗", "grams": 200}, 312),
+                             (milk_100g, {"amount": 250, "unit": "ml", "grams": 250}, 115)):
+        r = _eat(client, {"food_id": food, **item})
+        assert r.status_code == 201 and r.json()["record"]["data"]["items"][0]["kcal"] == kcal, (item, r.text)
+
+    per_100g = _food(client, per_100g={"kcal": 120})
+    got = _eat(client, {"food_id": per_100g, "amount": 200, "unit": "g"}).json()["record"]["data"]["items"][0]
+    assert (got["grams"], got["kcal"]) == (200, 240)
+    got = _eat(client, {"food_id": per_100g, "amount": 1, "unit": "块", "grams": 90}).json()["record"]["data"]["items"][0]
+    assert got["kcal"] == 108
+    for item in ({"amount": 1, "unit": "块"}, {}):
+        r = _eat(client, {"food_id": per_100g, **item})
+        assert r.status_code == 422 and "send grams" in r.json()["error"]["message"], item
+
+    r = _eat(client, {"food_id": "food_gone"})
+    assert r.status_code == 422 and "not found" in r.json()["error"]["message"]
+    r = _eat(client, {"food_id": "food_gone", "kcal": 80})
+    assert r.status_code == 201 and "not found" in r.json()["warnings"][0]
+    for serving in ({"size": 2, "unit": "个"}, {"amount": "1", "unit": "个"}, {"amount": 0, "unit": "个"},
+                    {"amount": 2, "grams": 100}):
+        r = client.post("/api/v1/foods", json={"name": "x", "serving": serving, "per_100g": {"kcal": 1}})
+        assert r.status_code == 400 and "serving" in r.json()["error"]["message"], serving
+
+
+def test_changing_a_food_item_amount_fills_it_again(client):
+    cracker = _food(client, serving={"amount": 1, "unit": "枚", "grams": 13}, per_serving={"kcal": 48, "fat_g": 0.3})
+    # The shape the agent writes: its own grams and the food's numbers, as on the live breakfast.
+    rec = _eat(client, {"food_id": cracker, "amount": 1, "unit": "枚", "grams": 13, "kcal": 48}).json()["record"]
+    item = rec["data"]["items"][0]
+    url = f"/api/v1/records/{rec['id']}"
+
+    # 其实吃了3枚: the item is sent back as read, with only the amount changed.
+    r = client.patch(url, json={"data": {"items": [{**item, "amount": 3}]}})
+    item = r.json()["record"]["data"]["items"][0]
+    assert (item["grams"], item["kcal"], item["fat_g"]) == (39, 144, 0.9)
+    assert r.json()["record"]["data"]["totals"]["kcal"] == 144 and r.json()["warnings"] == []
+
+    # A number the caller changed is theirs: it stays when the amount changes again.
+    r = client.patch(url, json={"data": {"items": [{**item, "amount": 2, "kcal": 100}]}})
+    item = r.json()["record"]["data"]["items"][0]
+    assert (item["grams"], item["kcal"], item["fat_g"]) == (26, 100, 0.6)
+
+    # A later change to the food does not move a meal nobody changed, even when its note is edited.
+    client.patch(f"/api/v1/foods/{cracker}", json={"per_serving": {"kcal": 60, "fat_g": 0.3, "protein_g": 1}})
+    r = client.patch(url, json={"note": "好吃"})
+    assert r.json()["record"]["data"]["items"][0] == item and r.json()["warnings"] == []
+
+    # A new amount in the same unit scales what the item carries, the caller's own kcal too; grams
+    # sent with it are the caller's, and a nutrient the item lacked comes from the food as it is now.
+    r = client.patch(url, json={"data": {"items": [{**item, "amount": 4, "grams": 60}]}})
+    item = r.json()["record"]["data"]["items"][0]
+    assert (item["grams"], item["kcal"], item["fat_g"], item["protein_g"]) == (60, 200, 1.2, 4)
+    assert r.json()["warnings"] == ["items[0] f: grams 60 do not match 4 枚 (52 g)"]
+
+    # Dropping food_id keeps the numbers as the item's own.
+    r = client.patch(url, json={"data": {"items": [{k: v for k, v in item.items() if k != "food_id"}]}})
+    assert r.json()["record"]["data"]["items"][0]["kcal"] == 200
+
+    # Logged by weight alone, a new weight (or an amount added later) is filled again too.
+    rice = _food(client, serving={"amount": 1, "unit": "碗", "grams": 150}, per_100g={"kcal": 156})
+    rec = _eat(client, {"food_id": rice, "grams": 200}).json()["record"]
+    url = f"/api/v1/records/{rec['id']}"
+    item = client.patch(url, json={"data": {"items": [{**rec["data"]["items"][0], "grams": 100}]}}).json()["record"]["data"]["items"][0]
+    assert item["kcal"] == 156
+    item = client.patch(url, json={"data": {"items": [{**item, "amount": 2, "unit": "碗"}]}}).json()["record"]["data"]["items"][0]
+    assert (item["grams"], item["kcal"]) == (300, 468)
+
+    # Logged in a unit the food doesn't know, by weight: a new amount scales the weight.
+    snack = _food(client, serving={"amount": 20, "unit": "g", "grams": 20}, per_serving={"kcal": 99})
+    rec = _eat(client, {"food_id": snack, "amount": 1, "unit": "袋", "grams": 20}).json()["record"]
+    url = f"/api/v1/records/{rec['id']}"
+    item = client.patch(url, json={"data": {"items": [{**rec["data"]["items"][0], "amount": 2}]}}).json()["record"]["data"]["items"][0]
+    assert (item["grams"], item["kcal"]) == (40, 198)
+    r = client.patch(url, json={"data": {"items": [{**item, "unit": "包"}]}})
+    assert r.status_code == 200 and (r.json()["record"]["data"]["items"][0]["kcal"]) == 198
+
+    # A stored item whose food is gone stays editable around it.
+    shake = _food(client, per_100g={"protein_g": 20})
+    rec = _eat(client, {"food_id": shake, "grams": 100}).json()["record"]
+    client.delete(f"/api/v1/foods/{shake}")
+    r = client.patch(f"/api/v1/records/{rec['id']}", json={"note": "n"})
+    assert r.status_code == 200, r.text
+
+
+def test_food_item_edits_find_the_item_they_change(client):
+    cracker = _food(client, serving={"amount": 1, "unit": "枚", "grams": 13}, per_serving={"kcal": 48})
+    biscuit = _food(client, serving={"amount": 1, "unit": "枚", "grams": 15}, per_serving={"kcal": 70})
+    two = _eat(client, {"food_id": cracker, "amount": 1}, {"food_id": cracker, "amount": 2}).json()["record"]
+    a1, a2 = two["data"]["items"]
+    url = f"/api/v1/records/{two['id']}"
+    # The first one is dropped and the second changed: the second is the one it came from.
+    got = client.patch(url, json={"data": {"items": [{**a2, "amount": 3}]}}).json()["record"]["data"]["items"]
+    assert [(i["grams"], i["kcal"]) for i in got] == [(39, 144)]
+    client.patch(url, json={"data": {"items": [a1, a2]}})
+    # Reordered, with the first one changed.
+    got = client.patch(url, json={"data": {"items": [a2, {**a1, "amount": 3}]}}).json()["record"]["data"]["items"]
+    assert [(i["grams"], i["kcal"]) for i in got] == [(26, 96), (39, 144)]
+
+    # Correcting the food of one item, when another item already uses that food.
+    mixed = _eat(client, {"name": "饼干", "food_id": cracker, "amount": 1},
+                 {"name": "消化饼", "food_id": biscuit, "amount": 2}).json()["record"]
+    a, b = mixed["data"]["items"]
+    got = client.patch(f"/api/v1/records/{mixed['id']}", json={"data": {"items": [{**a, "food_id": biscuit}, b]}}).json()
+    assert [(i["grams"], i["kcal"]) for i in got["record"]["data"]["items"]] == [(15, 70), (30, 140)]
+
+    # Repointed after its food was deleted as a duplicate.
+    dup = _food(client, serving={"amount": 1, "unit": "枚", "grams": 13}, per_serving={"kcal": 48})
+    rec = _eat(client, {"food_id": dup, "amount": 1}).json()["record"]
+    client.delete(f"/api/v1/foods/{dup}")
+    got = client.patch(f"/api/v1/records/{rec['id']}", json={"data": {"items": [{**rec["data"]["items"][0], "food_id": biscuit}]}}).json()
+    assert (got["record"]["data"]["items"][0]["grams"], got["record"]["data"]["items"][0]["kcal"]) == (15, 70)
+
+    # Two equal items, the second one changed; and two items both changed in one edit.
+    pair = _eat(client, {"food_id": cracker, "amount": 1}, {"food_id": cracker, "amount": 1}).json()["record"]
+    a, b = pair["data"]["items"]
+    got = client.patch(f"/api/v1/records/{pair['id']}", json={"data": {"items": [a, {**b, "amount": 3}]}}).json()
+    assert [(i["grams"], i["kcal"]) for i in got["record"]["data"]["items"]] == [(13, 48), (39, 144)]
+    both = _eat(client, {"food_id": cracker, "amount": 1}, {"food_id": cracker, "amount": 2}).json()["record"]
+    b1, b2 = both["data"]["items"]
+    got = client.patch(f"/api/v1/records/{both['id']}", json={"data": {"items": [{**b1, "amount": 2}, {**b2, "amount": 4}]}}).json()
+    assert [(i["grams"], i["kcal"]) for i in got["record"]["data"]["items"]] == [(26, 96), (52, 192)]
+
+    # A retried edit, sent again from the same old read, leaves the edit as it was.
+    one = _eat(client, {"food_id": cracker, "amount": 1}).json()["record"]
+    retry = {"data": {"items": [{**one["data"]["items"][0], "amount": 3}]}}
+    for _ in range(2):
+        got = client.patch(f"/api/v1/records/{one['id']}", json=retry).json()["record"]["data"]["items"][0]
+        assert (got["grams"], got["kcal"]) == (39, 144)
+
+    # A wrong food corrected together with the name.
+    misread = _eat(client, {"name": "饼干", "food_id": cracker, "amount": 2}).json()["record"]
+    fixed = {**misread["data"]["items"][0], "name": "消化饼", "food_id": biscuit}
+    got = client.patch(f"/api/v1/records/{misread['id']}", json={"data": {"items": [fixed]}}).json()["record"]["data"]["items"][0]
+    assert (got["grams"], got["kcal"]) == (30, 140)
+
+    # A food swap keeps the weight the item was logged by, also when grams were all there was.
+    white = _food(client, serving={"amount": 1, "unit": "碗", "grams": 150}, per_100g={"kcal": 156})
+    brown = _food(client, serving={"amount": 1, "unit": "碗", "grams": 200}, per_100g={"kcal": 116})
+    rice = _eat(client, {"food_id": white, "grams": 250}).json()["record"]
+    got = client.patch(f"/api/v1/records/{rice['id']}", json={"data": {"items": [{**rice["data"]["items"][0], "food_id": brown}]}}).json()
+    assert (got["record"]["data"]["items"][0]["grams"], got["record"]["data"]["items"][0]["kcal"]) == (250, 290)
+    milk_a = _food(client, serving={"amount": 200, "unit": "ml"}, per_100g={"kcal": 46})
+    milk_b = _food(client, serving={"amount": 200, "unit": "ml"}, per_serving={"kcal": 120})
+    milk = _eat(client, {"food_id": milk_a, "amount": 250, "unit": "ml", "grams": 250}).json()["record"]
+    got = client.patch(f"/api/v1/records/{milk['id']}", json={"data": {"items": [{**milk["data"]["items"][0], "food_id": milk_b}]}}).json()
+    assert got["record"]["data"]["items"][0]["kcal"] == 150
+
+    # A new amount in a unit the food doesn't know is refused, not given the old weight.
+    snack = _food(client, serving={"amount": 20, "unit": "g", "grams": 20}, per_serving={"kcal": 99})
+    bag = _eat(client, {"food_id": snack, "amount": 1, "unit": "袋", "grams": 20}).json()["record"]
+    r = client.patch(f"/api/v1/records/{bag['id']}", json={"data": {"items": [{**bag["data"]["items"][0], "amount": 2, "unit": "包"}]}})
+    assert r.status_code == 422 and "send grams" in r.json()["error"]["message"]
+
+    # The item's own food deleted: a new amount still scales what it carries.
+    gone = _food(client, serving={"amount": 1, "unit": "枚", "grams": 13}, per_serving={"kcal": 48})
+    rec = _eat(client, {"food_id": gone, "amount": 1}).json()["record"]
+    client.delete(f"/api/v1/foods/{gone}")
+    r = client.patch(f"/api/v1/records/{rec['id']}", json={"data": {"items": [{**rec["data"]["items"][0], "amount": 3}]}})
+    assert r.json()["record"]["data"]["items"][0]["kcal"] == 144 and "not found" in r.json()["warnings"][0]
+
+    # Sending the same meal again does not count the food as used again.
+    body = {"category": "meal", "external_id": "m-7", "start": "2026-11-02T08:00:00+09:00",
+            "data": {"items": [{"name": "f", "food_id": biscuit, "amount": 1}]}}
+    uses = lambda: next(f["use_count"] for f in client.get("/api/v1/foods").json()["foods"] if f["id"] == biscuit)  # noqa: E731
+    client.post("/api/v1/records", json=body)
+    before = uses()
+    client.post("/api/v1/records", json=body)
+    assert uses() == before
+
+
 def test_custom_category(client, tokens):
     cat = {"name": "reading", "title": "读书", "description": "Books read.",
            "schema": {"type": "object", "required": ["book"],

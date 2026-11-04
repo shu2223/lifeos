@@ -344,25 +344,197 @@ def canonical_meal(data: dict, warnings: list[str]) -> None:
                         "them into data.totals")
 
 
-def fill_from_food(item: dict, food: dict, warnings: list[str], label: str) -> None:
-    """Fill an item's missing grams and nutrients from a /foods entry."""
+# Units that measure weight or volume, as (g or ml, how many of those one is).
+MEASURES = {"g": ("g", 1), "gram": ("g", 1), "grams": ("g", 1), "克": ("g", 1), "kg": ("g", 1000),
+            "公斤": ("g", 1000), "千克": ("g", 1000), "斤": ("g", 500), "两": ("g", 50),
+            "ml": ("ml", 1), "毫升": ("ml", 1), "cc": ("ml", 1), "l": ("ml", 1000), "升": ("ml", 1000)}
+# Units that count servings of a library food, whatever its own serving unit is.
+SERVING_UNITS = {"份", "serving", "servings", "portion", "portions"}
+_FOOD_BASIS = ("food_id", "amount", "unit", "grams")
+_NUMBERS = ("grams", *NUTRIENTS)  # what an item's amount decides, and an edit carries over
+
+
+def _unit(u) -> str | None:
+    return u.strip().lower() if isinstance(u, str) else None
+
+
+def _portion(item: dict, food: dict) -> tuple[str, float] | str:
+    """How much of `food` the item's amount says it is: ("servings", n) or ("g", grams); or why
+    that can't be told. The amount comes before the item's grams, because it is what the user
+    said ("3枚"); grams beside it are often the agent's own estimate, and decide only when the
+    amount can't be matched with the food."""
     serving = food.get("serving") or {}
-    s_amount = serving.get("amount") or 1
-    same_unit = item.get("unit") in (None, serving.get("unit"))
-    if item.get("grams") is None and serving.get("grams") and same_unit:
-        item["grams"] = _round((item.get("amount") or s_amount) / s_amount * serving["grams"])
-        item.setdefault("unit", serving.get("unit"))
-    if food.get("per_100g") and item.get("grams") is not None:
-        filled = _scaled(food["per_100g"], item["grams"] / 100)
-    elif food.get("per_serving") and same_unit:
-        filled = _scaled(food["per_serving"], (item.get("amount") or s_amount) / s_amount)
-    else:
-        warnings.append(f"{label}: could not scale food {food['id']} (give grams, or use "
-                        f"its serving unit {serving.get('unit')!r})")
-        return
-    for k, v in filled.items():
-        item.setdefault(k, v)
+    s_amount, s_unit = serving.get("amount") or 1, serving.get("unit")
+    amount, unit, grams = item.get("amount"), item.get("unit"), item.get("grams")
+    u, su = _unit(unit), _unit(s_unit)
+    measure = MEASURES.get(u or "")
+    if amount is None:
+        if u is not None and u not in SERVING_UNITS and not measure:
+            amount = 1  # "一袋" is one of that unit, matched like any other amount
+        elif grams is not None and u not in SERVING_UNITS:
+            return "g", grams
+        elif measure:
+            return f"unit {unit!r} needs an amount: send amount, or grams"
+        else:
+            return "servings", 1
+    if u is None:
+        if s_amount == 1 or su is None:
+            return "servings", amount
+        if grams is not None:
+            return "g", grams
+        # 1 could be one 400 g tub or 1 g of it; reading it as the serving unit once made a tub 0.4 kcal.
+        if su in SERVING_UNITS:
+            return f"amount {amount:g} has no unit; a serving of this food is {s_amount:g} {s_unit}: send unit {s_unit!r}"
+        return (f"amount {amount:g} has no unit, and a serving of this food is {s_amount:g} {s_unit}: "
+                f"send unit '份' to count servings, or {s_unit!r} for an amount in {s_unit}")
+    if u == su:  # before any conversion: a bakery's 1 斤 of bread is the 340 g it says, not 500 g
+        return "servings", amount / s_amount
+    if measure and measure[0] == "g":
+        return "g", amount * measure[1]
+    s_measure = MEASURES.get(su or "")
+    if measure and s_measure and measure[0] == s_measure[0]:
+        return "servings", amount * measure[1] / s_measure[1] / s_amount
+    if u in SERVING_UNITS:
+        return "servings", amount
+    if grams is not None:
+        return "g", grams
+    if su is None:
+        return f"{amount:g} {unit} cannot be matched with this food, which has nutrients per 100 g: send grams"
+    return (f"{amount:g} {unit} cannot be matched with this food's serving ({s_amount:g} {s_unit}): "
+            f"send grams, an amount in {s_unit!r}, or unit '份' for servings")
+
+
+def _for_portion(kind: str, n: float, food: dict) -> tuple[float | None, dict] | str:
+    """The grams (when known) and nutrients of `n` servings or grams of `food`."""
+    serving = food.get("serving") or {}
+    s_measure = MEASURES.get(_unit(serving.get("unit")) or "")
+    s_grams = serving.get("grams") or (
+        (serving.get("amount") or 1) * s_measure[1] if s_measure and s_measure[0] == "g" else None)
+    grams = n if kind == "g" else n * s_grams if s_grams else None
+    if food.get("per_100g") and grams is not None:
+        return grams, _scaled(food["per_100g"], grams / 100)
+    if food.get("per_serving") and kind == "servings":
+        return grams, _scaled(food["per_serving"], n)
+    if food.get("per_serving") and s_grams:
+        return grams, _scaled(food["per_serving"], n / s_grams)
+    if kind == "g":
+        return (f"{n:g} g cannot be matched with this food: its serving has no weight; send an amount "
+                f"in {serving.get('unit')!r}, or unit '份' for servings")
+    return "this food has nutrients per 100 g and no weight for a serving: send grams"
+
+
+def fill_from_food(item: dict, food: dict) -> tuple[dict, str | None, str | None]:
+    """Fill an item's missing grams and nutrients from a /foods entry.
+
+    Returns what was filled; why nothing could be, when the amount can't be matched with the
+    food; and a note when the item's own grams disagree with its amount."""
+    portion = _portion(item, food)
+    by_amount = not isinstance(portion, str) and portion != ("g", item.get("grams"))
+    found = portion if isinstance(portion, str) else _for_portion(*portion, food)
+    if isinstance(found, str) and item.get("grams") is not None and portion != ("g", item["grams"]):
+        found, by_amount = _for_portion("g", item["grams"], food), False  # the amount alone can't say
+    if isinstance(found, str):
+        return {}, found, None
+    grams, nutrients = found
+    filled = {}
+    # A bare amount counts servings only when a serving is one unit, so that unit is the item's.
+    unit = (food.get("serving") or {}).get("unit") if (
+        by_amount and portion[0] == "servings" and item.get("amount") is not None) else None
+    for k, v in {"grams": _round(grams) if grams is not None else None, "unit": unit,
+                 **nutrients}.items():
+        if v is not None and item.get(k) is None:
+            item[k] = filled[k] = v
     item.setdefault("estimated", food.get("source") == "estimate")
+    note = None
+    if by_amount and grams and "grams" not in filled and abs(item["grams"] - grams) > 0.15 * grams:
+        how = " ".join(f"{x:g}" if isinstance(x, (int, float)) else str(x)
+                       for x in (item.get("amount", 1), item.get("unit") or "份"))
+        note = (f"grams {item['grams']:g} do not match {how} ({_round(grams):g} g)"
+                + ("; the nutrients follow the amount" if "kcal" in filled else ""))
+    return filled, None, note
+
+
+def _carried(item: dict, old: dict) -> dict:
+    """The numbers `item` brings back unchanged from the stored item `old`."""
+    return {k: old[k] for k in _NUMBERS
+            if isinstance(old.get(k), (int, float)) and item.get(k) == old[k]}
+
+
+def _stale_copy(item: dict, old: dict) -> bool:
+    """Whether `item` is an older read of `old` sent again: same food and amount, every number
+    off by the one factor an earlier edit scaled them by (a retried PATCH or upsert)."""
+    if any(item.get(k) != old.get(k) for k in ("food_id", "amount", "unit")):
+        return False
+    pairs = [(item[k], old[k]) for k in _NUMBERS
+             if isinstance(item.get(k), (int, float)) and isinstance(old.get(k), (int, float))]
+    ratios = [o / n for n, o in pairs if n >= 1]
+    return bool(ratios) and all(abs(r - ratios[0]) <= 0.05 * ratios[0] for r in ratios) \
+        and abs(ratios[0] - 1) > 0.05
+
+
+def _twins(sent: list, stored: list[dict]) -> tuple[set[int], dict[int, dict]]:
+    """Which sent items are stored items sent back as they were, and which stored item each
+    other food item is an edit of: the unclaimed one it still carries numbers from, preferring
+    the same food (a food swap may come with a new name), then more numbers, then its place.
+    Worked out before anything is filled, each stored item claimed once."""
+    free = list(range(len(stored)))
+    unchanged = set()
+    for i, item in enumerate(sent):
+        k = next((k for k in free if item == stored[k]), None)
+        if k is not None:
+            unchanged.add(i)
+            free.remove(k)
+    twins = {}
+    for i, item in enumerate(sent):
+        if i in unchanged or not isinstance(item, dict) or not item.get("food_id"):
+            continue
+        pool = [k for k in free if stored[k].get("food_id")]
+        scored = [((stored[k]["food_id"] == item["food_id"], len(_carried(item, stored[k])), k == i), k)
+                  for k in pool if _carried(item, stored[k]) or _stale_copy(item, stored[k])]
+        if scored:
+            k = max(scored)[1]
+            twins[i] = stored[k]
+            free.remove(k)
+    return unchanged, twins
+
+
+def _drop_carried_over(item: dict, old: dict, food: dict | None) -> dict:
+    """An item sent back with a new amount, unit or food still carries the stored grams and
+    nutrients, which held for the old amount. With the same food and unit and a new amount,
+    they are scaled to it, whoever set them; a stale copy of a scaled item gets the stored
+    numbers back. Otherwise those that match what the stored item's food gives for the old
+    amount are removed, to be filled again, and numbers that never matched it stay; grams
+    that were what the old amount went by stay too, while amount and unit do. Returns what
+    was removed."""
+    if _stale_copy(item, old):
+        item.update({k: old[k] for k in _NUMBERS if k in old})
+        return {}
+    if all(item.get(k) == old.get(k) for k in _FOOD_BASIS):
+        return {}
+    carried = _carried(item, old)
+    a, b = old.get("amount"), item.get("amount")
+    if (item.get("food_id") == old.get("food_id") and _unit(item.get("unit")) == _unit(old.get("unit"))
+            and isinstance(a, (int, float)) and isinstance(b, (int, float)) and a > 0 and a != b):
+        for k, v in carried.items():
+            item[k] = _round(v * b / a)
+        return {}
+    if food is None:
+        return {}
+    if (item.get("food_id") == old.get("food_id") and a == b
+            and isinstance(_portion({"amount": b, "unit": item.get("unit")}, food), str)):
+        return {}  # the unit renamed to one the food doesn't know (1 枚 -> 1 包): the numbers stand
+    then = {k: old[k] for k in ("amount", "unit") if old.get(k) is not None}
+    by_grams = old.get("grams") is not None and (old.get("amount") is None or fill_from_food(dict(then), food)[1])
+    if by_grams:
+        then["grams"] = old["grams"]  # the old amount alone did not tell how much; its grams did
+    fill_from_food(then, food)
+    # Grams the old amount went by still say how much, unless the amount or unit changed too.
+    keep_grams = by_grams and all(item.get(k) == old.get(k) for k in ("amount", "unit"))
+    dropped = {k: v for k, v in carried.items() if not (keep_grams and k == "grams")
+               and isinstance(then.get(k), (int, float)) and abs(then[k] - v) <= 0.06}
+    for k in dropped:
+        del item[k]
+    return dropped
 
 
 def _meal_type_for(hour: int, minute: int) -> str:
@@ -378,22 +550,45 @@ def _meal_type_for(hour: int, minute: int) -> str:
     return "late_night"
 
 
-def derive(conn, category: str, data: dict, start, end, warnings: list[str]) -> dict:
-    """Server-side fields. `start`/`end` are datetimes (end may be None)."""
+def derive(conn, category: str, data: dict, start, end, warnings: list[str],
+           stored: dict | None = None) -> dict:
+    """Server-side fields. `start`/`end` are datetimes (end may be None); `stored` is the data
+    of the record an update changes."""
     if category == "meal":
         from .foods import get_food, touch_food
         if "meal_type" not in data:
             data["meal_type"] = _meal_type_for(start.hour, start.minute)
         totals: dict[str, float] = {}
+        stored_items = [s for s in (stored or {}).get("items") or [] if isinstance(s, dict)]
+        unchanged, twins = _twins(data.get("items", []), stored_items)
         for i, item in enumerate(data.get("items", [])):
             label = f"items[{i}] {item.get('name', '')}"
-            if item.get("food_id"):
+            # An item sent back as stored stays as stored, so a note edit never refills or refuses it.
+            if item.get("food_id") and i not in unchanged:
                 food = get_food(conn, item["food_id"])
+                old, dropped = twins.get(i), {}
+                if old is not None:
+                    dropped = _drop_carried_over(item, old, food if food and old["food_id"] == food["id"]
+                                                 else get_food(conn, old["food_id"], deleted=True))
                 if food is None:
+                    if "kcal" not in item:
+                        raise ApiError(422, "invalid_data",
+                                       f"data['items'][{i}]['food_id']: food {item['food_id']} not found",
+                                       "GET /api/v1/foods?q=<name> finds it, or give the item its own kcal")
                     warnings.append(f"{label}: food_id {item['food_id']} not found")
                 else:
-                    fill_from_food(item, food, warnings, label)
-                    touch_food(conn, food["id"])
+                    _, problem, note = fill_from_food(item, food)
+                    # A new unit the food doesn't know, with the same amount: the old grams still say how much.
+                    if problem and "grams" in dropped and item.get("amount") == old.get("amount"):
+                        item["grams"] = dropped["grams"]
+                        _, problem, note = fill_from_food(item, food)
+                    if problem and "kcal" not in item:
+                        raise ApiError(422, "invalid_data", f"data['items'][{i}]: {problem}",
+                                       f"GET /api/v1/foods/{food['id']} shows its serving")
+                    warnings += [f"{label}: {w}" for w in (problem, note) if w]
+                    if not any(all(s.get(k) == item.get(k) for k in ("food_id", "amount", "unit"))
+                               for s in stored_items):
+                        touch_food(conn, food["id"])
             if "kcal" not in item:
                 warnings.append(f"{label}: no kcal; daily totals will undercount")
             for k in NUTRIENTS:

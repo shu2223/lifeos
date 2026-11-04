@@ -66,6 +66,9 @@ Paths in the table are relative to `$LIFEOS_URL`.
 - Check `frequent_foods` and `GET /foods?q=` first, so foods the user eats often get
   consistent numbers. When the user gives numbers from a label, save the food with
   `POST /foods`.
+- Refer to a library food with `food_id` plus an `amount` in its serving unit, `"unit": "份"`
+  for servings, or a weight in g. To change how much was eaten, send the item back as you read
+  it and change only `amount`; the server recomputes its grams and nutrients.
 - Fix mistakes with `PATCH`. Remove duplicates with `DELETE`. Never write a second record to
   fix the first.
 - Cigarettes: one `smoking` record per occasion, `{"count": 1}` for "抽了一根". The user

@@ -72,7 +72,8 @@ def _times(body: dict, tz):
     return start, end
 
 
-def _prepared(conn, body: dict, tz, warnings: list[str]) -> dict:
+def _prepared(conn, body: dict, tz, warnings: list[str], stored: dict | None = None) -> dict:
+    """The row to write for `body`; `stored` is the record it updates, if any."""
     cat = category(conn, body.get("category") or "")
     data = copy.deepcopy(body.get("data") or {})
     if not isinstance(data, dict):
@@ -85,7 +86,8 @@ def _prepared(conn, body: dict, tz, warnings: list[str]) -> dict:
         cats.canonical_workout(data, warnings)
     start, end = _times(body, tz)
     _validate(cat, data)
-    data = cats.derive(conn, cat["name"], data, start, end, warnings)
+    data = cats.derive(conn, cat["name"], data, start, end, warnings,
+                       stored=stored["data"] if stored and stored["category"] == cat["name"] else None)
     if isinstance(sent_totals, dict) and any(v != data["totals"].get(k) for k, v in sent_totals.items()):
         warnings.append(f"data.totals is computed from the items, which add up to "
                         f"{data['totals'].get('kcal', 0):g} kcal; the totals sent were not used. "
@@ -168,7 +170,7 @@ def upsert(conn, body: dict, actor: str, tz, *, log: bool = True) -> tuple[dict,
             "tags": body.get("tags") or before["tags"],
             "title": body.get("title") or ("" if before["title"] == auto_title
                                            else before["title"]),
-        }, tz, warnings)
+        }, tz, warnings, stored=before)
         conn.execute(
             "UPDATE records SET start_at=:start_at, end_at=:end_at, start_ts=:start_ts,"
             " end_ts=:end_ts, local_date=:local_date, title=:title, data=:data, tags=:tags,"
@@ -238,7 +240,7 @@ def update(conn, record_id: str, patch: dict, actor: str, tz) -> tuple[dict, lis
             "title": patch.get("title", "" if before["title"] == auto_title else before["title"]),
             "local_date": None,
         }
-        f = _prepared(conn, body, tz, warnings)
+        f = _prepared(conn, body, tz, warnings, stored=before)
         now = utc_now()
         conn.execute(
             "UPDATE records SET category=:category, start_at=:start_at, end_at=:end_at,"

@@ -31,6 +31,18 @@ def _check(food: dict) -> None:
     if food.get("per_serving") and not (food.get("serving") or {}).get("unit"):
         raise bad_request("per_serving needs serving: {amount, unit, grams?}",
                           "e.g. serving: {\"amount\": 1, \"unit\": \"碗\", \"grams\": 550}")
+    serving = food.get("serving") or {}
+    unknown = set(serving) - {"amount", "unit", "grams"}
+    if unknown:  # a misnamed size or weight would leave meals scaled from the wrong serving
+        raise bad_request(f"serving has unknown keys: {sorted(unknown)}",
+                          "serving: {amount, unit, grams?}, e.g. {\"amount\": 1, \"unit\": \"碗\", \"grams\": 550}")
+    for k in ("amount", "grams"):
+        v = serving.get(k)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0):
+            raise bad_request(f"serving.{k} must be a positive number, not {v!r}")
+    if serving and not serving.get("unit"):
+        raise bad_request("serving needs a unit, the one a meal item's amount is given in",
+                          "e.g. serving: {\"amount\": 1, \"unit\": \"个\", \"grams\": 50}")
     for key in ("per_serving", "per_100g"):
         unknown = set(food.get(key) or {}) - set(NUTRIENTS)
         if unknown:
@@ -40,8 +52,9 @@ def _check(food: dict) -> None:
         raise bad_request(f"source must be one of {', '.join(SOURCES)}")
 
 
-def get_food(conn, food_id: str) -> dict | None:
-    r = conn.execute("SELECT * FROM foods WHERE id = ? AND deleted_at IS NULL",
+def get_food(conn, food_id: str, *, deleted: bool = False) -> dict | None:
+    """A food by id; `deleted` also finds one that was deleted, to read meals logged with it."""
+    r = conn.execute("SELECT * FROM foods WHERE id = ?" + ("" if deleted else " AND deleted_at IS NULL"),
                      (food_id,)).fetchone()
     return _row(r) if r else None
 
