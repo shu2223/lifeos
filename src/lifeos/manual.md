@@ -197,8 +197,14 @@ Common metric names:
 | Vitals | `blood_pressure_systolic` / `blood_pressure_diastolic` (mmHg), `blood_glucose` (mg/dL), `body_temperature` (degC), `heart_rate` (count/min) |
 | Intake and activity | `dietary_water` (mL), `step_count`, `mindful_minutes` (min) |
 
-`GET /api/v1/metrics` lists them all. An unknown metric name is created automatically. To set
-how it aggregates by day (`sum`, `avg` or `last`), declare it first with `POST /metrics`.
+`GET /api/v1/metrics` lists them all. Send these names, in these units:
+- `weight_kg`, `body_weight`, `steps`, `water_ml` and similar names are stored under the metric
+  above, with a line in the response's `warnings`.
+- A `unit` is converted into the metric's own: `斤`, `lbs`, `l`, `liter`, `h`, `hours`, `minutes`
+  and so on. A unit that can't be converted, such as `杯` for water, is refused with a 400 whose
+  hint lists the units that work. Estimate the amount in one of those yourself.
+- An unknown metric name is created automatically, with a warning. To set how it aggregates by
+  day (`sum`, `avg` or `last`), declare it first with `POST /metrics`.
 
 ### 6.4 A workout the user tells you about
 
@@ -207,6 +213,14 @@ how it aggregates by day (`sum`, `avg` or `last`), declare it first with `POST /
  "end": "2026-11-02T07:35:00+09:00",
  "data": {"activity_type": "running", "distance_km": 5.2, "active_kcal": 330, "rpe": 6}}
 ```
+
+Send `duration_min`, `distance_km` and `active_kcal` (or `total_kcal`) under these keys:
+- `calories`, `kcal`, `duration`, `distance` and similar names are renamed to them, with a
+  warning. `distance_m`, `duration_s` and `duration_h` are converted.
+- A bare `distance` of 100 or more is refused, because it is probably metres. Send
+  `distance_km` or `distance_m`.
+- `duration_min` is computed from `start` and `end` when you leave it out. It is computed again
+  when a PATCH or a resend changes either time, unless that request sends `duration_min` too.
 
 Apple Watch workouts are imported automatically, so before adding one, check that the same
 workout is not already there: `GET /records?category=workout&date=YYYY-MM-DD`. If it is, PATCH
@@ -330,7 +344,14 @@ PATCH {BASE}/api/v1/profile
 
 `null` deletes a key. `goals` merges one level down: send only the goals you change, and a goal
 set to `null` is removed; the others stay. `goals.kcal` also sets the energy bar's line (§6.8).
-`goals.cigarettes_max` is a daily cap on cigarettes, not a target to reach. The `timezone` key drives every day boundary. Change it when the user
+`goals.cigarettes_max` is a daily cap on cigarettes, not a target to reach.
+
+Goal keys are `kcal`, `protein_g`, `fat_g`, `carbs_g` and the other nutrient keys (§6.1),
+`steps`, `exercise_min`, `sleep_hours`, `weight_kg` and `cigarettes_max`. Names such as
+`calories`, `protein`, `max_cigarettes` and `target_weight` are stored under these keys. Any
+other goal is refused with a 400 that lists them, because nothing would read it.
+
+The `timezone` key drives every day boundary. Change it when the user
 moves, not for short trips: times with an explicit offset already land on the right local day.
 
 ## 7. Apple Health and Apple Fitness
@@ -418,4 +439,5 @@ Read the `hint`: it usually says exactly what to do next.
 
 **Idempotency:** when you sync from another system, set `source` (for example `"notion"`) and a
 stable `external_id`. Resending the same pair updates the existing record instead of adding a
-duplicate.
+duplicate. A resend without `start` or `end` keeps the stored times, and one with only `end`
+keeps the stored `start`.

@@ -1,13 +1,13 @@
 """Metric catalog for numeric samples (steps, heart rate, weight, sleep stages ...).
 
-Names are snake_case. Apple HealthKit identifiers and Health Auto Export names map onto them;
-anything unknown gets a metric created on the fly, so no data is dropped.
+Names are snake_case. Apple HealthKit identifiers, Health Auto Export names and the names agents
+write map onto them; anything unknown gets a metric created on the fly, so no data is dropped.
 """
 import re
 
 # name: (title, unit, aggregation, HealthKit identifier suffix, aliases)
 CATALOG: dict[str, tuple[str, str, str, str | None, tuple[str, ...]]] = {
-    "step_count": ("步数", "count", "sum", "StepCount", ()),
+    "step_count": ("步数", "count", "sum", "StepCount", ("steps", "step", "daily_steps")),
     "walking_running_distance": ("步行+跑步距离", "km", "sum", "DistanceWalkingRunning", ()),
     "cycling_distance": ("骑行距离", "km", "sum", "DistanceCycling", ()),
     "swimming_distance": ("游泳距离", "m", "sum", "DistanceSwimming", ()),
@@ -32,9 +32,11 @@ CATALOG: dict[str, tuple[str, str, str, str | None, tuple[str, ...]]] = {
     "environmental_audio_exposure": ("环境音量", "dBASPL", "avg",
                                      "EnvironmentalAudioExposure", ()),
     "headphone_audio_exposure": ("耳机音量", "dBASPL", "avg", "HeadphoneAudioExposure", ()),
-    "body_mass": ("体重", "kg", "last", "BodyMass", ("weight_body_mass", "weight")),
-    "body_mass_index": ("BMI", "count", "last", "BodyMassIndex", ()),
-    "body_fat_percentage": ("体脂率", "%", "last", "BodyFatPercentage", ()),
+    "body_mass": ("体重", "kg", "last", "BodyMass",
+                  ("weight_body_mass", "weight", "weight_kg", "body_weight", "body_weight_kg",
+                   "bodyweight")),
+    "body_mass_index": ("BMI", "count", "last", "BodyMassIndex", ("bmi",)),
+    "body_fat_percentage": ("体脂率", "%", "last", "BodyFatPercentage", ("body_fat",)),
     "lean_body_mass": ("去脂体重", "kg", "last", "LeanBodyMass", ()),
     "height": ("身高", "cm", "last", "Height", ()),
     "waist_circumference": ("腰围", "cm", "last", "WaistCircumference", ()),
@@ -42,7 +44,7 @@ CATALOG: dict[str, tuple[str, str, str, str | None, tuple[str, ...]]] = {
     "blood_pressure_diastolic": ("舒张压", "mmHg", "avg", "BloodPressureDiastolic", ()),
     "blood_glucose": ("血糖", "mg/dL", "avg", "BloodGlucose", ()),
     "body_temperature": ("体温", "degC", "avg", "BodyTemperature", ()),
-    "dietary_water": ("饮水", "mL", "sum", "DietaryWater", ("water",)),
+    "dietary_water": ("饮水", "mL", "sum", "DietaryWater", ("water", "water_ml", "water_intake")),
     "dietary_energy": ("饮食能量（其他 App）", "kcal", "sum", "DietaryEnergyConsumed", ()),
     "sleep_in_bed": ("卧床", "min", "sum", None, ()),
     "sleep_asleep": ("睡眠（未分期）", "min", "sum", None, ()),
@@ -87,18 +89,32 @@ PERCENT_FRACTION = {"oxygen_saturation", "body_fat_percentage"}
 # Cumulative HealthKit quantity types not in the catalog still need sum aggregation.
 _SUM_HINTS = ("dietary", "distance", "count", "energy", "time", "flights")
 _AVG_HINTS = ("speed", "rate", "length", "percentage", "average", "test", "contact")
-# Unit labels as phones write them with localized units turned on.
+# Unit labels as phones write them with localized units turned on, and as agents spell them.
+# Looked up as given, then in lower case.
 UNIT_ALIASES = {"bpm": "count/min", "步": "count", "次": "count", "steps": "count",
                 "次/分": "count/min", "千卡": "kcal", "大卡": "kcal", "千焦": "kJ",
                 "公里": "km", "千米": "km", "米": "m", "厘米": "cm", "分钟": "min", "小时": "hr",
-                "秒": "s", "毫秒": "ms", "公斤": "kg", "千克": "kg", "毫升": "mL", "升": "L"}
+                "秒": "s", "毫秒": "ms", "公斤": "kg", "千克": "kg", "毫升": "mL", "升": "L",
+                "克": "g", "磅": "lb", "times": "count", "percent": "%",
+                **dict.fromkeys(("cal", "calorie", "calories", "kcals"), "kcal"),
+                **dict.fromkeys(("h", "hour", "hours", "hrs"), "hr"),
+                **dict.fromkeys(("mins", "minute", "minutes"), "min"),
+                **dict.fromkeys(("sec", "secs", "second", "seconds"), "s"),
+                **dict.fromkeys(("lbs", "pound", "pounds"), "lb"),
+                **dict.fromkeys(("kilogram", "kilograms"), "kg"),
+                **dict.fromkeys(("gram", "grams"), "g"),
+                **dict.fromkeys(("l", "liter", "litre", "liters", "litres"), "L"),
+                **dict.fromkeys(("milliliter", "millilitre", "milliliters", "millilitres"), "mL"),
+                **dict.fromkeys(("kilometer", "kilometre", "kilometers", "kilometres"), "km"),
+                **dict.fromkeys(("meter", "metre", "meters", "metres"), "m"),
+                **dict.fromkeys(("mile", "miles"), "mi")}
 
 ALIASES = {alias: name for name, row in CATALOG.items() for alias in row[4]}
 BY_HK = {row[3]: name for name, row in CATALOG.items() if row[3]}
 
 _UNITS = {
     ("kJ", "kcal"): 1 / 4.184, ("Cal", "kcal"): 1.0,
-    ("lb", "kg"): 0.45359237, ("g", "kg"): 0.001,
+    ("lb", "kg"): 0.45359237, ("g", "kg"): 0.001, ("斤", "kg"): 0.5,
     ("mi", "km"): 1.609344, ("m", "km"): 0.001, ("km", "m"): 1000.0, ("yd", "m"): 0.9144,
     ("ft", "cm"): 30.48, ("in", "cm"): 2.54, ("m", "cm"): 100.0, ("ft", "m"): 0.3048,
     ("mi", "m"): 1609.344, ("km/hr", "km/hr"): 1.0, ("mi/hr", "km/hr"): 1.609344,
@@ -118,6 +134,15 @@ def snake(s: str) -> str:
 def canonical(name: str) -> str:
     n = snake(name)
     return ALIASES.get(n, n)
+
+
+def unit_name(unit: str) -> str:
+    return UNIT_ALIASES.get(unit) or UNIT_ALIASES.get(unit.lower(), unit)
+
+
+def units_into(target: str) -> list[str]:
+    """Units a value can be given in for a metric whose unit is `target`."""
+    return [target, *(a for a, b in _UNITS if b == target and a != target)]
 
 
 def from_hk(identifier: str) -> str:
@@ -140,7 +165,7 @@ def guess_aggregation(name: str, hk_suffix: str | None = None) -> str:
 
 def convert(metric: str, value: float, unit: str, target: str) -> tuple[float, str]:
     """Convert into the metric's catalog unit where we know how; otherwise keep as given."""
-    unit = UNIT_ALIASES.get(unit, unit)
+    unit = unit_name(unit) if unit else unit
     if metric in PERCENT_FRACTION and unit == "%" and value <= 1.0:
         return value * 100, "%"
     if not unit or unit == target:

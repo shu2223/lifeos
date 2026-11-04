@@ -81,6 +81,8 @@ def _prepared(conn, body: dict, tz, warnings: list[str]) -> dict:
     if cat["name"] == "meal":
         sent_totals = data.pop("totals", None)
         cats.canonical_meal(data, warnings)
+    elif cat["name"] == "workout":
+        cats.canonical_workout(data, warnings)
     start, end = _times(body, tz)
     _validate(cat, data)
     data = cats.derive(conn, cat["name"], data, start, end, warnings)
@@ -100,10 +102,28 @@ def _prepared(conn, body: dict, tz, warnings: list[str]) -> dict:
     }
 
 
-def _own_data(rec: dict) -> dict:
-    """A stored record's data without what the server derives, to merge new input into: any
-    meal totals in the result were then sent by the caller."""
-    return {k: v for k, v in rec["data"].items() if not (rec["category"] == "meal" and k == "totals")}
+def _sent_data(category: str, body: dict, warnings: list[str]):
+    """The data an update sends, with workout aliases renamed before it is merged, so that
+    "calories" replaces a stored active_kcal instead of losing to it."""
+    sent = copy.deepcopy(body.get("data", {}))
+    if category == "workout" and isinstance(sent, dict):
+        cats.canonical_workout(sent, warnings)
+    return sent
+
+
+def _retimed(before: dict, times: dict, tz) -> bool:
+    """Whether `times` gives the stored record `before` a new span that has an end."""
+    start, end = _times(times, tz)
+    return end is not None and (start, end) != _times(before, tz)
+
+
+def _own_data(rec: dict, sent: dict, retimed: bool) -> dict:
+    """A stored record's data without what the server derives, to merge `sent` into: any meal
+    totals in the result were then sent by the caller, and a workout given new times gets its
+    duration from them, unless `sent` has one."""
+    derived = {"meal": {"totals"},
+               "workout": {"duration_min"} if retimed and "duration_min" not in (sent or {}) else set()}
+    return {k: v for k, v in rec["data"].items() if k not in derived.get(rec["category"], ())}
 
 
 def get(conn, record_id: str, with_attachments: bool = True) -> dict:
@@ -122,7 +142,8 @@ def upsert(conn, body: dict, actor: str, tz, *, log: bool = True) -> tuple[dict,
 
     An update refreshes the fields the sender provides and keeps what others added: data keys
     it does not send (an rpe the user gave an imported workout), the note, tags and a custom
-    title. A record the user deleted stays deleted. The caller holds the transaction.
+    title. A resend without start or end keeps the stored times. A record the user deleted
+    stays deleted. The caller holds the transaction.
     Returns (record, warnings, created)."""
     warnings: list[str] = []
     source = (body.get("source") or "agent").strip()
@@ -137,9 +158,12 @@ def upsert(conn, body: dict, actor: str, tz, *, log: bool = True) -> tuple[dict,
         before = _row(existing)
         cat = category(conn, before["category"])
         auto_title = cats.default_title(cat["name"], cat["title"], before["data"])
+        sent = _sent_data(before["category"], body, warnings)
+        times = {"start": body.get("start") or before["start"],
+                 "end": body.get("end") if body.get("start") or body.get("end") else before["end"]}
         f = _prepared(conn, {
-            **body,
-            "data": {**_own_data(before), **(body.get("data") or {})},
+            **body, **times,
+            "data": {**_own_data(before, sent, _retimed(before, times, tz)), **(sent or {})},
             "note": body.get("note") or before["note"],
             "tags": body.get("tags") or before["tags"],
             "title": body.get("title") or ("" if before["title"] == auto_title
@@ -193,6 +217,8 @@ def update(conn, record_id: str, patch: dict, actor: str, tz) -> tuple[dict, lis
     if unknown:
         raise bad_request(f"cannot patch {sorted(unknown)}",
                           "patchable: category, start, end, title, data, tags, note")
+    if "start" in patch and patch["start"] is None:
+        raise bad_request("start cannot be removed", "send a new start, or leave it out")
     with tx(conn):
         before = get(conn, record_id, with_attachments=False)
         if before["deleted_at"]:
@@ -200,17 +226,18 @@ def update(conn, record_id: str, patch: dict, actor: str, tz) -> tuple[dict, lis
                            f"POST /api/v1/records/{record_id}/restore first")
         cat = category(conn, before["category"])
         auto_title = cats.default_title(cat["name"], cat["title"], before["data"])
+        warnings: list[str] = []
+        sent = _sent_data(patch.get("category", before["category"]), patch, warnings)
+        times = {"start": patch.get("start", before["start"]),
+                 "end": patch["end"] if "end" in patch else before["end"]}
         body = {
-            "category": patch.get("category", before["category"]),
-            "start": patch.get("start", before["start"]),
-            "end": patch["end"] if "end" in patch else before["end"],
-            "data": merge_patch(_own_data(before), patch.get("data", {})),
+            "category": patch.get("category", before["category"]), **times,
+            "data": merge_patch(_own_data(before, sent, _retimed(before, times, tz)), sent),
             "tags": patch.get("tags", before["tags"]),
             "note": patch.get("note", before["note"]),
             "title": patch.get("title", "" if before["title"] == auto_title else before["title"]),
             "local_date": None,
         }
-        warnings: list[str] = []
         f = _prepared(conn, body, tz, warnings)
         now = utc_now()
         conn.execute(

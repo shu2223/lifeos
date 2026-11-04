@@ -225,7 +225,7 @@ def test_samples_dedupe_and_series(client):
     r = client.post("/api/v1/samples", json={"samples": samples}).json()
     assert r["inserted"] == 5
     again = client.post("/api/v1/samples", json={"samples": samples[:1]}).json()
-    assert again == {"inserted": 0, "duplicates": 1, "samples": []}
+    assert again == {"inserted": 0, "duplicates": 1, "samples": [], "warnings": []}
     s = client.get("/api/v1/metrics/step_count/series",
                    params={"from": "2026-11-02", "to": "2026-11-02"}).json()
     assert s["points"][0]["value"] == 1700

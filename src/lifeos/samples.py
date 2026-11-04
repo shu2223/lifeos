@@ -39,7 +39,8 @@ def ensure_metric(conn, name: str, unit: str | None, *, aggregation: str | None 
         conn.execute(
             "INSERT INTO metrics(name, title, unit, aggregation, date_by, created_at)"
             " VALUES (?, ?, ?, ?, 'start', ?)",
-            (name, title or name, unit or "count", aggregation or mx.guess_aggregation(name),
+            (name, title or name, mx.unit_name(unit) if unit else "count",
+             aggregation or mx.guess_aggregation(name),
              utc_now()))
         m = metric(conn, name)
     if cache is not None:
@@ -63,19 +64,35 @@ def row_for(m: dict, value: float, unit: str | None, start_iso: str, start_ts: f
 
 
 def add(conn, items: list[dict], actor: str, tz) -> dict:
-    """API write path: validate each sample, insert, report ids and duplicates."""
+    """API write path: validate each sample, insert, report ids, duplicates and warnings.
+
+    A metric name agents use for a known metric (weight_kg, steps) is renamed, and a unit is
+    converted into the metric's own. A unit that can't be converted is refused, since the value
+    would be added up with values in the metric's unit."""
     if not isinstance(items, list) or not items:
         raise bad_request("send {\"samples\": [...]} with at least one sample")
     if len(items) > MAX_BATCH:
         raise bad_request(f"at most {MAX_BATCH} samples per request")
-    now, cache, out, dupes = utc_now(), {}, [], 0
+    now, cache, out, dupes, warnings, named = utc_now(), {}, [], 0, [], set()
     with tx(conn):
         for i, s in enumerate(items):
             if not isinstance(s, dict) or "metric" not in s or "value" not in s:
                 raise bad_request(f"samples[{i}] needs metric and value")
             if not isinstance(s["value"], (int, float)) or isinstance(s["value"], bool):
                 raise bad_request(f"samples[{i}].value must be a number")
-            m = ensure_metric(conn, mx.canonical(s["metric"]), s.get("unit"), cache=cache)
+            name, unit = mx.canonical(s["metric"]), s.get("unit")
+            if s["metric"] not in named:
+                named.add(s["metric"])
+                if mx.snake(s["metric"]) != name:
+                    warnings.append(f"metric {s['metric']} is {name}; send {name} next time")
+                elif metric(conn, name) is None:
+                    warnings.append(f"created metric {name}; if you meant an existing one, "
+                                    "GET /metrics lists them")
+            m = ensure_metric(conn, name, unit, cache=cache)
+            if unit and mx.convert(name, 1.0, unit, m["unit"])[1] != m["unit"]:
+                raise bad_request(f"samples[{i}]: {name} is in {m['unit']}, and {unit!r} cannot "
+                                  "be converted to it",
+                                  f"send the value in one of {', '.join(mx.units_into(m['unit']))}")
             try:
                 start = parse(s.get("start"), tz)
                 end = parse(s["end"], tz) if s.get("end") else start
@@ -95,7 +112,7 @@ def add(conn, items: list[dict], actor: str, tz) -> dict:
             sample = get(conn, got[0])
             out.append(sample)
             log_change(conn, actor, "create", "sample", str(got[0]), after=sample, at=now)
-    return {"inserted": len(out), "duplicates": dupes, "samples": out}
+    return {"inserted": len(out), "duplicates": dupes, "samples": out, "warnings": warnings}
 
 
 def _row(r) -> dict:

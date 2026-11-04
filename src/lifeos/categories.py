@@ -432,3 +432,48 @@ def default_title(category: str, cat_title: str, data: dict) -> str:
         if isinstance(data.get(key), str) and data[key]:
             return f"{cat_title}：{data[key][:40]}"
     return cat_title
+
+
+# Workout fields under the names agents write, matched without case, as (key, factor into the
+# key's unit). The page and /summary read only the schema's keys, so these would be stored and
+# never shown.
+WORKOUT_ALIASES = {
+    **dict.fromkeys(("calories", "kcal", "cal", "active_calories", "calories_burned",
+                     "kcal_burned", "energy_kcal"), ("active_kcal", 1)),
+    "total_calories": ("total_kcal", 1),
+    **dict.fromkeys(("duration", "duration_minutes", "duration_mins", "minutes"),
+                    ("duration_min", 1)),
+    **dict.fromkeys(("duration_s", "duration_sec", "duration_seconds"), ("duration_min", 1 / 60)),
+    **dict.fromkeys(("duration_h", "duration_hr", "duration_hours"), ("duration_min", 60)),
+    **dict.fromkeys(("distance", "distance_kilometers", "distance_kilometres"), ("distance_km", 1)),
+    **dict.fromkeys(("distance_m", "distance_meters", "distance_metres"), ("distance_km", 0.001)),
+    **dict.fromkeys(("distance_mi", "distance_miles"), ("distance_km", 1.609344)),
+    **dict.fromkeys(("avg_heart_rate", "average_heart_rate", "average_hr"), ("avg_hr", 1)),
+    "max_heart_rate": ("max_hr", 1),
+}
+
+
+def canonical_workout(data: dict, warnings: list[str]) -> None:
+    """Workout input as agents write it, before validation: calories, duration and distance under
+    their own names are renamed to the schema's keys, converting seconds, hours, metres and miles;
+    a key already given wins. A bare distance of 100 or more is refused, since it is more likely
+    metres than kilometres."""
+    for key in list(data):
+        value = data[key]
+        to, factor = WORKOUT_ALIASES.get(key.lower(), (None, 1))
+        if to is None or value is None or isinstance(value, bool) or (
+                isinstance(value, str) and not any(c.isdigit() for c in value)):
+            continue
+        del data[key]
+        if to in data:
+            warnings.append(f"dropped data.{key}, {to} is already given")
+            continue
+        number = isinstance(value, (int, float))
+        if key.lower() == "distance" and number and value >= 100:
+            raise ApiError(422, "invalid_data",
+                           f"data[{key!r}]: {value:g} has no unit, and as km it is too far",
+                           "send distance_km in kilometres, or distance_m in metres")
+        data[to] = round(value * factor, 3) if number and factor != 1 else value
+        warnings.append(f"read data.{key} as {to}"
+                        + (f" = {data[to]:g}" if number and factor != 1 else "")
+                        + f"; send {to} next time")

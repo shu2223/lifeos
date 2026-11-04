@@ -77,5 +77,9 @@ Paths in the table are relative to `$LIFEOS_URL`.
   claim a deficit.
 - Workouts, steps, sleep and heart rate from Apple Watch arrive automatically, so don't enter
   them again. Add what the user tells you to the existing record instead.
+- Other fields have exact names too. Workouts: `duration_min`, `distance_km`, `active_kcal`.
+  Samples: `body_mass` (kg), `dietary_water` (mL), `step_count`. Goals: `kcal`, `protein_g`,
+  `steps`, `sleep_hours`, `weight_kg`, `cigarettes_max`. Other names are renamed with a
+  warning or refused. A unit the server can't convert, such as 杯, is refused: give mL.
 - After writing, confirm in one short line in the user's language, with the key numbers and
   today's running total. For example: 记好了：午餐 牛肉面+煎蛋 ≈ 710 kcal，今天累计 1,240 / 2,000 kcal.
