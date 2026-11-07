@@ -811,9 +811,10 @@ function energyCard(day, sum) {
         : "还没有消耗数据，Apple 健康同步之后才算得出来。"),
       h("p", {class: "caption"}, factRow(burnFacts(e, "消耗：")))));
   }
-  const c = e.carry_kcal, prev = live ? "昨天" : "前一天";
-  const carry = c == null ? null : c === 0 ? `${prev}正好在目标线上`
-    : c < 0 ? `${prev}比目标多减了 ${fmt(-c)}，${which}从 −${fmt(-c)} 开始` : `${prev}离目标差 ${fmt(c)}，${which}从 +${fmt(c)} 开始`;
+  // Only an overshoot carries: a day that ended under its line starts the next from 0.
+  const c = e.carry_kcal, p = e.previous_over_kcal ?? c, prev = live ? "昨天" : "前一天";
+  const carry = p == null ? null : p === 0 ? `${prev}正好在目标线上`
+    : p < 0 ? `${prev}比目标多减了 ${fmt(-p)}，${which}从 0 开始` : `${prev}离目标差 ${fmt(p)}，${which}从 +${fmt(p)} 开始`;
   const b = e.balance_kcal, end = live ? e.balance_tonight_kcal : b, t = e.target_kcal;
   const R = Math.max(Math.abs(b), Math.abs(end ?? b), Math.abs(t ?? 0), 300) * 1.3, pos = x => 50 + x / R * 50;
   const zone = t != null && b <= t ? "good" : b <= 0 ? "under" : "over";

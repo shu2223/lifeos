@@ -691,7 +691,8 @@ def test_energy_bar_today(client):
     assert client.get("/api/v1/summary/day").json()["energy"] == {
         "logged": True, "intake_kcal": 2000, "basal_kcal": 800, "basal_expected_kcal": 2000,
         "active_kcal": 200,
-        "carry_kcal": 100,  # yesterday ended at 1,600 − 2,300 = −700, 100 short of its line
+        "previous_over_kcal": 100,  # yesterday ended at 1,600 − 2,300 = −700, 100 over its −800 line
+        "carry_kcal": 100,
         "balance_kcal": 1100,  # 100 + 2,000 − 800 − 200
         "balance_tonight_kcal": -100,  # 1,200 more resting burn to come before midnight
         "average_burn_kcal": 2300, "target_kcal": -800, "over_target_kcal": 700,
@@ -704,6 +705,7 @@ def test_energy_bar_past_days(client):
     day = _energy_fixture(client)
     y = client.get("/api/v1/summary/day", params={"date": day(1)}).json()["energy"]
     assert y["final"] is True and y["carry_kcal"] is None  # the day before it has no meals
+    assert y["previous_over_kcal"] is None
     assert (y["balance_kcal"], y["balance_tonight_kcal"], y["over_target_kcal"]) == (-700, -700, 100)
     assert y["walk_minutes"] is None and y["walk_steps"] is None
     blank = client.get("/api/v1/summary/day", params={"date": day(2)}).json()["energy"]
@@ -804,8 +806,9 @@ def test_energy_bar_goal_changes_the_line(client):
     assert e["balance_tonight_kcal"] == -200 and e["walk_minutes"] is None  # 2,000 − 2,000 − 200
     client.patch("/api/v1/profile", json={"goals": {"kcal": 2500}})
     e = client.get("/api/v1/summary/day").json()["energy"]
-    assert e["target_kcal"] == 200 and e["carry_kcal"] == -900  # yesterday −700 against +200
-    assert e["balance_tonight_kcal"] == -1100 and e["over_target_kcal"] == -1300  # room left
+    assert e["target_kcal"] == 200 and e["previous_over_kcal"] == -900  # yesterday −700 against +200
+    assert e["carry_kcal"] == 0  # a day under its line banks nothing for the next
+    assert e["balance_tonight_kcal"] == -200 and e["over_target_kcal"] == -400  # room left
     assert e["walk_minutes"] is None and e["walk_steps"] is None
 
 

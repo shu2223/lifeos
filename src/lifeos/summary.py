@@ -138,8 +138,9 @@ def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) 
     the average daily burn of the 30 days before, so eating the goal on an ordinary day lands on
     it. Today, resting burn still to come is added up to the 7-day average (the month's when the
     week has none), and `later` kcal of meals timed after now count tonight but not yet now;
-    activity is not guessed. Yesterday's distance from its own line carries into today, nothing
-    older does."""
+    activity is not guessed. Yesterday's distance from its own line carries into today only when
+    it ended over the line: a day that went under it does not bank kcal for the next, since the bar
+    is for losing weight. Nothing older carries."""
     day = date.fromisoformat(d)
     lo = (day - timedelta(days=31)).isoformat()
     basal = {k: v["value"] for k, v in _metric_days(conn, "basal_energy", lo, d).items()}
@@ -169,8 +170,9 @@ def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) 
     yday = day - timedelta(days=1)
     y_eaten, y_basal = _eaten(conn, yday.isoformat()), basal.get(yday.isoformat(), expected(yday))
     y_target = line(yday)[1]
-    carry = (y_eaten - y_basal - active.get(yday.isoformat(), 0) - y_target
-             if None not in (y_eaten, y_basal, y_target) else None)
+    prev = (y_eaten - y_basal - active.get(yday.isoformat(), 0) - y_target
+            if None not in (y_eaten, y_basal, y_target) else None)
+    carry = None if prev is None else max(0, prev)
     balance = tonight = None
     if eaten is not None and (b is not None or (is_today and exp is not None)):
         balance = (carry or 0) + eaten - later - (b or 0) - a
@@ -184,7 +186,7 @@ def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) 
     return {
         "logged": eaten is not None, "intake_kcal": _int(eaten),
         "basal_kcal": _int(b), "basal_expected_kcal": _int(exp), "active_kcal": _int(a),
-        "carry_kcal": _int(carry), "balance_kcal": _int(balance),
+        "previous_over_kcal": _int(prev), "carry_kcal": _int(carry), "balance_kcal": _int(balance),
         "balance_tonight_kcal": _int(tonight), "average_burn_kcal": _int(avg),
         "target_kcal": _int(target), "over_target_kcal": _int(over),
         "walk_kcal_per_min": round(kpm, 2), "walk_steps_per_min": round(spm),
