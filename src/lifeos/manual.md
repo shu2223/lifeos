@@ -314,10 +314,12 @@ Lists return `next_cursor` when there is more. Pass it back as `cursor` to get t
 it up, and resting and active burn both pull it down. `energy` in `/summary/day` holds it:
 
 - `balance_kcal`: eaten − resting − active so far, plus `carry_kcal`. A meal timed later today
-  counts tonight, not yet now. `previous_over_kcal` is yesterday's own eaten − burn against its
-  own line, without what carried into yesterday. Only an overshoot carries: `carry_kcal` is
-  `previous_over_kcal` when positive and 0 when yesterday ended under its line, so a day that
-  went under does not bank kcal for today. Nothing older carries over.
+  counts tonight, not yet now. `previous_over_kcal` is where yesterday ended against its own
+  line, including what carried into yesterday (yesterday's `over_target_kcal`). An overshoot
+  carries day after day until it is paid back: `carry_kcal` is `previous_over_kcal` when
+  positive and 0 when yesterday ended under its line, so a day that went under does not bank
+  kcal for today. A day with no meals logged breaks the run (the next day's `carry_kcal` is
+  null). The run is followed back at most 90 days.
 - `balance_tonight_kcal`: where the bar ends at midnight if nothing more is eaten or done.
   The resting burn still to come is added up to `basal_expected_kcal` (the 7-day average, or
   the 30-day one when the week has none); activity is not guessed. On past days it is the

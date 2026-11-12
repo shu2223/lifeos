@@ -32,6 +32,7 @@ SLEEP_METRICS = {"in_bed_min": "sleep_in_bed", "asleep_unstaged_min": "sleep_asl
 MAX_RANGE_DAYS = 400
 WHOLE = {"steps", "flights_climbed", "stand_hours"}  # summed from fractional hourly values
 WALK_DEFAULT = (4.0, 100.0)  # kcal and steps per minute of walking until a walk is recorded
+CARRY_DAYS = 90  # how far back an unbroken run of logged days is followed for the carry
 
 
 def _shown(key: str, value: float) -> float:
@@ -125,12 +126,12 @@ def _walk_rate(conn) -> tuple[float, float]:
             median(steps) if steps else WALK_DEFAULT[1])
 
 
-def _eaten(conn, d: str) -> float | None:
-    """A day's eaten kcal, or None when no meal was logged that day."""
-    r = conn.execute("SELECT COUNT(*) AS n, SUM(json_extract(data, '$.totals.kcal')) AS kcal"
-                     " FROM records WHERE category = 'meal' AND deleted_at IS NULL"
-                     " AND local_date = ?", (d,)).fetchone()
-    return (r["kcal"] or 0) if r["n"] else None
+def _eaten_days(conn, d_from: str, d_to: str) -> dict[str, float]:
+    """Eaten kcal per day, for the days in the range with at least one meal logged."""
+    return {r["local_date"]: r["kcal"] or 0 for r in conn.execute(
+        "SELECT local_date, SUM(json_extract(data, '$.totals.kcal')) AS kcal FROM records"
+        " WHERE category = 'meal' AND deleted_at IS NULL AND local_date BETWEEN ? AND ?"
+        " GROUP BY local_date", (d_from, d_to))}
 
 
 def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) -> dict:
@@ -138,11 +139,18 @@ def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) 
     the average daily burn of the 30 days before, so eating the goal on an ordinary day lands on
     it. Today, resting burn still to come is added up to the 7-day average (the month's when the
     week has none), and `later` kcal of meals timed after now count tonight but not yet now;
-    activity is not guessed. Yesterday's distance from its own line carries into today only when
-    it ended over the line: a day that went under it does not bank kcal for the next, since the bar
-    is for losing weight. Nothing older carries."""
+    activity is not guessed. An overshoot carries until it is paid back: where yesterday ended
+    against its own line, counting what carried into yesterday, carries into today when it is
+    over the line. A day that ended under its line starts the next from 0, since the bar is for
+    losing weight and going under banks nothing; a day with no meals logged breaks the run too.
+    The run is followed back at most CARRY_DAYS days."""
     day = date.fromisoformat(d)
-    lo = (day - timedelta(days=31)).isoformat()
+    first = day - timedelta(days=CARRY_DAYS)
+    ate = _eaten_days(conn, first.isoformat(), (day - timedelta(days=1)).isoformat())
+    start = day - timedelta(days=1)  # the first day of the unbroken run of logged days before d
+    while start > first and (start - timedelta(days=1)).isoformat() in ate:
+        start -= timedelta(days=1)
+    lo = (start - timedelta(days=31)).isoformat()
     basal = {k: v["value"] for k, v in _metric_days(conn, "basal_energy", lo, d).items()}
     active = {k: v["value"] for k, v in _metric_days(conn, "active_energy", lo, d).items()}
 
@@ -162,16 +170,24 @@ def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) 
                 return sum(vals) / len(vals)
         return None
 
+    def own(x: date) -> float | None:
+        """A finished day's eaten − burn against its own line, before anything carried into it."""
+        k = x.isoformat()
+        e, b, t = ate.get(k), basal.get(k, expected(x)), line(x)[1]
+        return e - b - active.get(k, 0) - t if None not in (e, b, t) else None
+
+    prev = None  # where the day before d ended against its line, its own carry included
+    x = start
+    while x < day:
+        o = own(x)
+        prev = None if o is None else o + max(0, prev or 0)
+        x += timedelta(days=1)
+
     is_today = day == today
     exp = expected(day)
     b = basal.get(d) if is_today else basal.get(d, exp)
     a = active.get(d, 0)
     avg, target = line(day)
-    yday = day - timedelta(days=1)
-    y_eaten, y_basal = _eaten(conn, yday.isoformat()), basal.get(yday.isoformat(), expected(yday))
-    y_target = line(yday)[1]
-    prev = (y_eaten - y_basal - active.get(yday.isoformat(), 0) - y_target
-            if None not in (y_eaten, y_basal, y_target) else None)
     carry = None if prev is None else max(0, prev)
     balance = tonight = None
     if eaten is not None and (b is not None or (is_today and exp is not None)):

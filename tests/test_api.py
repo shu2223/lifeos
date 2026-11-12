@@ -789,13 +789,51 @@ def test_walk_pace_comes_from_walks_of_five_minutes_or_more(client):
     assert (e["walk_kcal_per_min"], e["walk_steps_per_min"]) == (6.0, 120)
 
 
-def test_energy_carry_reaches_back_one_day(client):
-    day = _energy_fixture(client)
-    client.post("/api/v1/records", json={"category": "meal", "start": f"{day(2)}T08:00:00+09:00",
-                                         "data": {"items": [{"name": "饭", "kcal": 3000}]}})
+def _meal(client, d: str, kcal: float):
+    client.post("/api/v1/records", json={"category": "meal", "start": f"{d}T08:00:00+09:00",
+                                         "data": {"items": [{"name": "饭", "kcal": kcal}]}})
+
+
+def test_energy_overshoot_carries_until_paid_back(client):
+    day = _energy_fixture(client)  # each day's own result is eaten − 1,500 against the −800 line
+    _meal(client, day(3), 3000)  # +1,500
+    _meal(client, day(2), 1000)  # −500 of its own, so it ends at +1,000 with the carry
+    two = client.get("/api/v1/summary/day", params={"date": day(2)}).json()["energy"]
+    assert (two["carry_kcal"], two["over_target_kcal"]) == (1500, 1000)
     y = client.get("/api/v1/summary/day", params={"date": day(1)}).json()["energy"]
-    assert y["carry_kcal"] == 1500  # 3,000 − 2,300 = +700 against a −800 line
-    assert client.get("/api/v1/summary/day").json()["energy"]["carry_kcal"] == 100  # not 1,600
+    assert (y["previous_over_kcal"], y["carry_kcal"], y["over_target_kcal"]) == (1000, 1000, 1100)
+    e = client.get("/api/v1/summary/day").json()["energy"]
+    assert (e["previous_over_kcal"], e["carry_kcal"]) == (1100, 1100)  # 1,000 + yesterday's own +100
+    assert e["balance_kcal"] == 2100 and e["over_target_kcal"] == 1700  # 1,100 + 2,000 − 800 − 200
+
+
+def test_energy_run_ends_when_a_day_finishes_under_its_line(client):
+    day = _energy_fixture(client)
+    _meal(client, day(3), 2500)  # +1,000
+    _meal(client, day(2), 200)  # −1,300 of its own: ends at −300, under the line
+    two = client.get("/api/v1/summary/day", params={"date": day(2)}).json()["energy"]
+    assert (two["carry_kcal"], two["over_target_kcal"]) == (1000, -300)
+    y = client.get("/api/v1/summary/day", params={"date": day(1)}).json()["energy"]
+    assert (y["previous_over_kcal"], y["carry_kcal"]) == (-300, 0)  # going under banks nothing
+    assert client.get("/api/v1/summary/day").json()["energy"]["carry_kcal"] == 100
+
+
+def test_energy_day_without_meals_breaks_the_run(client):
+    day = _energy_fixture(client)  # day(2) has no meals
+    _meal(client, day(3), 3000)
+    y = client.get("/api/v1/summary/day", params={"date": day(1)}).json()["energy"]
+    assert y["previous_over_kcal"] is None and y["carry_kcal"] is None
+    assert client.get("/api/v1/summary/day").json()["energy"]["carry_kcal"] == 100
+
+
+def test_energy_run_is_followed_back_carry_days(client, monkeypatch):
+    from lifeos import summary
+    day = _energy_fixture(client)
+    _meal(client, day(3), 3000)
+    _meal(client, day(2), 1500)
+    assert client.get("/api/v1/summary/day").json()["energy"]["carry_kcal"] == 1600
+    monkeypatch.setattr(summary, "CARRY_DAYS", 2)  # day(3) is out of reach: day(2) starts from 0
+    assert client.get("/api/v1/summary/day").json()["energy"]["carry_kcal"] == 100
 
 
 def test_energy_bar_goal_changes_the_line(client):
