@@ -805,7 +805,7 @@ function energyCard(day, sum) {
   if (!e) return null;
   const live = !e.final, which = live ? "今天" : "这天";
   const head = h("div", {class: "ys-card-head"}, h("h2", {class: "ys-card-title"}, live ? "今日热量" : "热量"));
-  if (!e.logged || e.balance_kcal == null) {
+  if (e.balance_kcal == null) {  // today counts from 0 eaten even before the first meal, so this is a past day or no burn data
     return h("section", {class: "ys-card energy"}, head, h("div", {class: "energy-empty"},
       h("p", {class: "body-text"}, !e.logged ? `${which}没记饮食，算不出收支。对 agent 说一句“我中午吃了……”就会算上。`
         : "还没有消耗数据，Apple 健康同步之后才算得出来。"),
@@ -848,7 +848,7 @@ function energyCard(day, sum) {
   }
   const detail = h("div", {class: "energy-detail"});
   const more = disclosure("一天的变化", detail, {ontoggle: () => { if (more.open && !detail.childElementCount) energyDetail(detail, day); }});
-  const sub = factRow([tonight && `到今晚预计 ${signed(end)}`, t != null && `目标线 ${signed(t)}`]);
+  const sub = factRow([!e.logged && "还没记饮食，先按 0 算", tonight && `到今晚预计 ${signed(end)}`, t != null && `目标线 ${signed(t)}`]);
   return h("section", {class: "ys-card energy"}, head,
     h("div", {class: "energy-body"},
       carry ? h("p", {class: "caption energy-carry"}, carry) : null,
@@ -874,7 +874,7 @@ async function energyDetail(host, day) {
     return;
   }
   const e = sum.energy;
-  if (!e?.logged || e.balance_kcal == null) { host.replaceChildren(h("p", {class: "caption"}, "这天的数据不够画曲线。")); return; }
+  if (e?.balance_kcal == null) { host.replaceChildren(h("p", {class: "caption"}, "这天的数据不够画曲线。")); return; }
   const live = !e.final, start = dayStartMs(day), hoursIn = iso => Math.min(24, Math.max(0, (Date.parse(iso) - start) / 3.6e6));
   const B = Array(24).fill(0), A = Array(24).fill(0);
   for (const [arr, pts] of [[B, basal], [A, active]]) for (const p of pts) arr[Math.min(23, Math.floor(hoursIn(p.bucket)))] += p.value;

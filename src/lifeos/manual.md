@@ -332,8 +332,9 @@ it up, and resting and active burn both pull it down. `energy` in `/summary/day`
   would bring tonight back to the line, at the owner's own pace from their recent walks
   (`walk_kcal_per_min`, `walk_steps_per_min`). A past day's `over_target_kcal` already
   includes its `carry_kcal`; to total several days, add up `over_target_kcal − carry_kcal`.
-- `logged: false` means no meal was recorded that day, so the balance is unknown. Say that
-  instead of reporting a big deficit.
+- `logged: false` means no meal was recorded that day. On a past day the balance is unknown
+  (null). Today the bar is still worked out as if 0 had been eaten so far (`intake_kcal` 0), so
+  the morning has a bar; say that nothing is logged yet instead of reporting a big deficit.
 
 Answer "还能吃多少" or "要走多久" from these numbers, for example "今晚预计 +50，比目标线高
 857，要抵掉约走 3 小时 24 分（约 19,500 步）". Don't lecture.

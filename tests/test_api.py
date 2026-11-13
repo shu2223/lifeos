@@ -701,6 +701,17 @@ def test_energy_bar_today(client):
         "final": False}
 
 
+def test_energy_bar_today_before_any_meal(client):
+    _energy_fixture(client)
+    meal = client.get("/api/v1/records", params={"category": "meal", "date": client.get(
+        "/api/v1/summary/day").json()["date"]}).json()["records"][0]
+    client.delete(f"/api/v1/records/{meal['id']}")
+    e = client.get("/api/v1/summary/day").json()["energy"]
+    # nothing logged yet this morning: the bar still shows, counting 0 eaten
+    assert e["logged"] is False and e["intake_kcal"] == 0
+    assert (e["balance_kcal"], e["balance_tonight_kcal"], e["over_target_kcal"]) == (-900, -2100, -1300)
+
+
 def test_energy_bar_past_days(client):
     day = _energy_fixture(client)
     y = client.get("/api/v1/summary/day", params={"date": day(1)}).json()["energy"]

@@ -190,6 +190,9 @@ def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) 
     avg, target = line(day)
     carry = None if prev is None else max(0, prev)
     balance = tonight = None
+    logged = eaten is not None
+    if eaten is None and is_today:
+        eaten = 0  # nothing logged yet this morning: draw the bar from 0 eaten, `logged` stays false
     if eaten is not None and (b is not None or (is_today and exp is not None)):
         balance = (carry or 0) + eaten - later - (b or 0) - a
         if not is_today:
@@ -200,7 +203,7 @@ def _energy(conn, d: str, eaten: float | None, later: float, goal, today: date) 
     kpm, spm = _walk_rate(conn)
     walk = over / kpm if is_today and over is not None and over > 0 else None
     return {
-        "logged": eaten is not None, "intake_kcal": _int(eaten),
+        "logged": logged, "intake_kcal": _int(eaten),
         "basal_kcal": _int(b), "basal_expected_kcal": _int(exp), "active_kcal": _int(a),
         "previous_over_kcal": _int(prev), "carry_kcal": _int(carry), "balance_kcal": _int(balance),
         "balance_tonight_kcal": _int(tonight), "average_burn_kcal": _int(avg),

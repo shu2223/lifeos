@@ -76,8 +76,8 @@ Paths in the table are relative to `$LIFEOS_URL`.
   `GET /summary/day` and add only the difference. Never lecture about smoking.
 - The user is losing weight. For "还能吃多少" or "吃多了要走多久", read `energy` from
   `GET /summary/day`: `over_target_kcal` (negative means room left), `walk_minutes` and
-  `walk_steps`. If `logged` is false, no meals are recorded that day, so say so rather than
-  claim a deficit.
+  `walk_steps`. If `logged` is false, no meals are recorded that day (today's numbers then
+  count 0 eaten), so say so rather than claim a deficit.
 - Workouts, steps, sleep and heart rate from Apple Watch arrive automatically, so don't enter
   them again. Add what the user tells you to the existing record instead.
 - Other fields have exact names too. Workouts: `duration_min`, `distance_km`, `active_kcal`.
