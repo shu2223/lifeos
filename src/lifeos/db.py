@@ -171,6 +171,35 @@ CREATE TABLE IF NOT EXISTS record_series (
 UPDATE samples SET local_date = date(substr(end_at, 1, 19), '+6 hours')
 WHERE metric IN (SELECT name FROM metrics WHERE date_by = 'end');
 """,
+    # OAuth for MCP clients (oauth.py): registered clients, one-time codes, refresh tokens.
+    4: """
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id     TEXT PRIMARY KEY,
+  secret_hash   TEXT,
+  client_name   TEXT NOT NULL,
+  redirect_uris TEXT NOT NULL,
+  meta          TEXT NOT NULL DEFAULT '{}',
+  created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash    TEXT PRIMARY KEY,
+  client_id    TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  challenge    TEXT NOT NULL,
+  scope        TEXT NOT NULL,
+  resource     TEXT,
+  expires_at   REAL NOT NULL,
+  used_at      REAL
+);
+CREATE TABLE IF NOT EXISTS oauth_grants (
+  refresh_hash TEXT PRIMARY KEY,
+  client_id    TEXT NOT NULL,
+  token_name   TEXT NOT NULL,
+  scope        TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS oauth_grants_by_client ON oauth_grants(client_id);
+""",
 }
 SCHEMA_VERSION = max(MIGRATIONS)
 

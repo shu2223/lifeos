@@ -132,9 +132,10 @@ def cmd_status(_args) -> None:
         print(f"import    {j['created_at']} {j['kind']} {j['status']}")
 
 
-def cmd_api(args) -> None:
-    """Call the running API as an agent: the token comes from a file, never the command line,
-    so it stays out of shell history and agent transcripts."""
+def _agent_auth() -> tuple[str, str]:
+    """API root and token for calling the running server as an agent. The token comes from the
+    environment or a file, never the command line, so it stays out of shell history and agent
+    transcripts."""
     base = os.environ.get("LIFEOS_URL", f"http://127.0.0.1:{DEFAULT_PORT}/api/v1").rstrip("/")
     token = os.environ.get("LIFEOS_TOKEN")
     if not token:
@@ -143,6 +144,45 @@ def cmd_api(args) -> None:
             token = token_file.read_text().strip()
         except OSError as e:
             sys.exit(f"no token: set LIFEOS_TOKEN or LIFEOS_TOKEN_FILE ({e})")
+    return base, token
+
+
+def cmd_mcp(args) -> None:
+    """MCP over stdio, for clients that start a local command: each JSON-RPC line on stdin is
+    passed to the server's /mcp endpoint, and its reply written to stdout."""
+    base, token = _agent_auth()
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        req = urllib.request.Request(base + "/mcp", data=line.encode(), method="POST", headers={
+            "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                msg_id = json.loads(line).get("id")
+            except (ValueError, AttributeError):
+                msg_id = None
+            if msg_id is not None:
+                raw = json.dumps({"jsonrpc": "2.0", "id": msg_id, "error": {
+                    "code": -32000, "message": f"HTTP {e.code}: {raw.decode(errors='replace')}"}
+                }).encode()
+            else:
+                raw = b""
+        except urllib.error.URLError as e:
+            print(f"lifeos mcp: cannot reach {base}: {e.reason}", file=sys.stderr)
+            continue
+        if raw.strip():
+            sys.stdout.write(raw.decode() + "\n")
+            sys.stdout.flush()
+
+
+def cmd_api(args) -> None:
+    """Call the running API as an agent."""
+    base, token = _agent_auth()
     path = "/" + args.path.lstrip("/").removeprefix("api/v1/")
     body = args.body
     if body == "-" or (body is None and args.method in ("POST", "PATCH") and not sys.stdin.isatty()):
@@ -218,6 +258,9 @@ def main(argv=None) -> None:
     a.add_argument("path", help="path under the API root ($LIFEOS_URL), with query string")
     a.add_argument("body", nargs="?", help="JSON body, or - to read stdin")
     a.set_defaults(func=cmd_api)
+
+    m = sub.add_parser("mcp", help="MCP over stdio, for agents that run a local command")
+    m.set_defaults(func=cmd_mcp)
 
     args = ap.parse_args(argv)
     if args.cmd == "token" and args.action != "list" and not args.name:

@@ -4,6 +4,9 @@ lifeos holds one person's life records on their own machine: what they eat, Appl
 Apple Fitness data, workouts, sleep, weight, mood, diary, medication, spending, smoking, and any
 category an agent adds later. You (an agent) read and write it over HTTP on the owner's behalf.
 
+**MCP**: if you are an MCP client, connect to `{BASE}/api/v1/mcp` instead (Streamable HTTP,
+bearer token or OAuth). Its tools wrap the endpoints below and carry the same rules.
+
 **API root: `{BASE}/api/v1`.** This is the one address an agent needs, and every endpoint
 lives under it. This manual is `{BASE}/api/v1/manual` and the OpenAPI spec is
 `{BASE}/api/v1/openapi.json`. Paths outside the API root may sit behind the owner's own login,

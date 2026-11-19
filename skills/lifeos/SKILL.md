@@ -11,6 +11,10 @@ guessing.
 
 ## Connecting
 
+If your client supports MCP, prefer the MCP server at `$LIFEOS_URL/mcp` (for example
+`https://yishuapp.com/life/api/v1/mcp`, bearer token or OAuth): its tools and instructions cover
+everything below. Otherwise use the HTTP API:
+
 - **API root**: `$LIFEOS_URL`, for example `https://yishuapp.com/life/api/v1`. On the server
   itself it is `http://127.0.0.1:8773/api/v1`. Every call goes under this address. Other paths
   on the same site may sit behind the owner's login.

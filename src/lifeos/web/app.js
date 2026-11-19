@@ -1413,7 +1413,9 @@ async function viewSettings() {
       }, "ys-btn ys-btn--sm ys-btn--danger"))))));
   const external = (href, text) => h("a", {class: "ys-link", href, target: "_blank", rel: "noopener"}, text, ysIcon("external"));
   const agents = card("接入的 agent", null, h("div", {class: "card-stack"},
-    h("p", {class: "body-text muted"}, "每个 agent 用自己的 token，写下的每条记录都能看出是谁写的。把 API 地址和 token 交给它；不支持 skill 的 agent 让它先读说明书。"),
+    h("p", {class: "body-text muted"}, "每个 agent 用自己的 token，写下的每条记录都能看出是谁写的。"),
+    h("div", {class: "secret"}, h("code", null, AGENT_API + "/mcp"), button("复制 MCP 地址", () => copy(AGENT_API + "/mcp"), "ys-btn ys-btn--sm")),
+    h("p", {class: "caption"}, "支持 MCP 的 agent 填这个地址：能填请求头的带上 token，Claude、ChatGPT 的连接器只填地址，第一次连接时登录并点“允许”。其他 agent 用下面的 API 地址加 token。"),
     h("div", {class: "secret"}, h("code", null, AGENT_API), button("复制地址", () => copy(AGENT_API), "ys-btn ys-btn--sm")),
     h("p", {class: "link-row"}, external(AGENT_API + "/manual", "agent 说明书"), external(REPO + "/tree/main/skills/lifeos", "skill（GitHub）"))),
     tokenList,

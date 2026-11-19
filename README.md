@@ -37,6 +37,7 @@ LIFEOS_HOME=/tmp/lifeos-demo .venv/bin/lifeos serve --port 8780
 
 ## 设计要点
 
+- **MCP**：`/api/v1/mcp` 是标准 MCP 服务，支持 MCP 的 agent 填上地址就能用，见下文“接入 agent：MCP”。
 - **一份给 agent 看的说明书**：`GET /api/v1/manual`（同 `/llms.txt`），内容在 [manual.md](src/lifeos/manual.md)。另外有 `/api/v1/openapi.json` 和 `/api/v1/docs`。agent 先调用 `GET /api/v1/context`，一次拿到当前时间、时区、个人资料与目标、有哪些类别、今天已记录的内容和常吃的食物。
 - **四种数据**
   - **记录（records）**：带时间的结构化事件。内置类别有饮食 `meal`、运动 `workout`、活动圆环 `activity_summary`、睡眠感受 `sleep`、心情 `mood`、日记 `journal`、用药 `medication`、身体状况 `symptom`、消费 `expense`、抽烟 `smoking`。agent 可以随时用 JSON Schema 新建类别，比如读书、护肤、学习时长。
@@ -105,7 +106,61 @@ install -d -m 700 /etc/lifeos && (umask 077; lifeos token create mini-pc > /etc/
 
 第二条命令生成小主机自己用的 token，`lifeos api` 命令会读它。
 
+## 接入 agent：MCP（推荐）
+
+lifeos 自带一个标准的 MCP 服务，所有支持 MCP 的 agent 用同一种方式接入：
+
+```
+https://yishuapp.com/life/api/v1/mcp
+```
+
+在小主机本机是 `http://127.0.0.1:8773/api/v1/mcp`。agent 连上以后，工具和每个工具的参数格式、什么时候该用、记录规范都由服务端下发：先读 `get_context`、一顿饭估算到每样食物、改错用 `update_record`、记完一句话确认……不用再另外给它 skill 或说明书。
+
+| 工具 | 作用 |
+|---|---|
+| `get_context` | 开始时调一次：当前时间和时区、个人资料与目标、类别、今天的汇总、常吃的食物 |
+| `log_meal` | 记一顿饭：每样食物带克数、热量和三大营养素，服务端算合计、补餐次、返回今天累计 |
+| `log_smoking` / `log_measurements` | 记一根烟 / 记体重、饮水等数值 |
+| `log_record` | 记其他类别：心情、日记、用药、身体状况、消费、手动运动、自建类别 |
+| `update_record` / `delete_record` / `restore_record` | 改错、删重复、恢复 |
+| `day_summary` / `days_summary` | 某一天的摄入、活动、睡眠、抽烟和今日热量 / 一段时间的每日概览 |
+| `search_records` / `get_record` / `workout_series` / `metric_series` / `list_samples` | 查记录、运动心率曲线、健康指标趋势 |
+| `search_foods` / `save_food` / `update_food` | 食物库 |
+| `get_profile` / `update_profile` / `get_category` / `create_category` / `list_changes` / `read_manual` | 资料与目标、类别、修改历史、完整说明书 |
+
+每个工具都对应一个 REST 接口，用的是这个 agent 自己的 token 在服务内部调用。所以校验、权限、`warnings`、修改记录都和 REST 完全一样，写下的每条记录也能看出是哪个 agent 写的。读写分得清：只读 token 调写入工具会被拒绝，每个工具都标了只读或会修改数据，客户端可以据此决定要不要先问你。
+
+协议是 Streamable HTTP。2026-07-28 的无状态协议，以及 2024-11-05 到 2025-11-25 的握手协议都支持，客户端用哪种都行。
+
+### 认证：两种方式
+
+**能填请求头的 agent**（Claude Code、Codex、Cursor、Gemini CLI、Cherry Studio 等）：先发一个 token（网页“设置”→“接入的 agent”，或 `lifeos token create <agent名>`），再配置地址加请求头 `Authorization: Bearer <token>`。比如 Claude Code：
+
+```bash
+claude mcp add --transport http lifeos https://yishuapp.com/life/api/v1/mcp --header "Authorization: Bearer <token>"
+```
+
+其他客户端一般是在 MCP 配置的 JSON 里写：
+
+```json
+{"mcpServers": {"lifeos": {"url": "https://yishuapp.com/life/api/v1/mcp",
+                           "headers": {"Authorization": "Bearer <token>"}}}}
+```
+
+**只能填地址的 agent**（Claude 网页版和手机 App 的“连接器”、ChatGPT 的连接器等）：用 OAuth，只填上面的地址，不用 token。第一次连接时会打开 lifeos 的授权页；授权页在 Cloudflare Access 后面，要先用你的账号登录，所以别人点不了“允许”。授权页会写明是哪个应用、授权后跳回哪个网址，还可以选只读。点“允许”后，lifeos 给这个应用发一个普通 token，名字是应用名加四位编号（比如 `claude-3fa2`）。它出现在“设置”→“接入的 agent”里，写下的记录也署这个名字；不想用了在那里吊销即可。同一个应用重新授权，会替换它之前的 token，不会越积越多。
+
+**小主机上只支持本地命令的 agent**：命令填 `lifeos mcp`。它读 `/etc/lifeos/agent.token`（或环境变量 `LIFEOS_TOKEN`），把消息转给本机的 MCP 服务。
+
+### 实现说明
+
+- MCP 和 OAuth 中 agent 直接调用的部分都在 `/life/api/v1/` 下面，和原来的 API 走同一条 Access 放行规则，Cloudflare 不需要改。用到的地址：MCP `/life/api/v1/mcp`；元数据 `/life/api/v1/.well-known/oauth-protected-resource` 和 `/life/api/v1/.well-known/oauth-authorization-server`（`openid-configuration` 同内容）；注册、换 token、吊销分别是 `/life/api/v1/oauth/register`、`/oauth/token`、`/oauth/revoke`。只有授权页 `/life/oauth/authorize` 在 Access 后面。
+- 不带 token 访问 MCP 会得到 401，`WWW-Authenticate` 头里写着元数据地址，客户端由此找到授权服务器。官方 MCP Python SDK 按这条路径走通了：先在网站根目录找 `/.well-known/...`，被 Access 重定向后改用上面的地址，再完成动态注册。
+- 万一哪个客户端只认网站根目录、在这一步报错，就在 Cloudflare 加一条隧道路由：路径 `^/\.well-known/(oauth-|openid-configuration)`，服务 `http://127.0.0.1:8773`，排在 `^/life` 前面。再给 `yishuapp.com/.well-known` 建一个 Bypass 的 Access 应用。lifeos 已经能响应 `/.well-known/oauth-protected-resource/life/api/v1/mcp` 和 `/.well-known/oauth-authorization-server/life/api/v1` 这两个根目录地址。
+- 授权码 10 分钟有效、只能用一次，必须带 PKCE（S256）。同一个授权码被用第二次时，用它换到的 token 会被一并吊销。回调地址必须和注册时一致，本机回调（localhost）可以换端口。
+
 ## 给 agent 用的 skill
+
+不支持 MCP 的 agent 直接调 REST API，用 skill 告诉它怎么用。
 
 [skills/lifeos/SKILL.md](skills/lifeos/SKILL.md) 是写给所有 agent 的使用说明，不绑定某一个工具。一个 skill 就是一个文件夹，里面放一个 `SKILL.md`。文件开头的 `description` 写明什么时候该用：你提到吃饭、运动、体重、睡眠、心情，或者问起自己的数据时。正文写怎么连接、先调哪个接口、怎么估算一顿饭、怎么改错，以及记完之后怎么跟你确认。支持 skill 的 agent 平时只读 `description`，碰到相关话题才加载正文。
 
@@ -125,6 +180,7 @@ install -d -m 700 /etc/lifeos && (umask 077; lifeos token create mini-pc > /etc/
 | `lifeos token create <agent名> [--scope read\|write\|admin]` | 给一个 agent 发 token，只显示一次 |
 | `lifeos token list` / `lifeos token revoke <名字>` | 查看 / 吊销 token |
 | `lifeos api GET context` | 以 agent 身份调用 API，token 读自 `/etc/lifeos/agent.token` |
+| `lifeos mcp` | MCP 的本地命令入口（stdio），给只支持本地命令的 agent 用 |
 | `lifeos receive` | 打开 LocalSend 等手机发导出文件，确认后接收并导入（见下文） |
 | `lifeos import apple-health ~/export.zip` | 导入已经在小主机上的苹果健康导出 |
 | `lifeos status` | 看看存了多少东西 |
@@ -183,7 +239,7 @@ cd /opt/lifeos && .venv/bin/pytest -q && .venv/bin/ruff check src tests
 
 ## 代码结构
 
-[app.py](src/lifeos/app.py) 是 HTTP 层；[records.py](src/lifeos/records.py)、[samples.py](src/lifeos/samples.py)、[foods.py](src/lifeos/foods.py) 和 [profile.py](src/lifeos/profile.py) 是各类数据；[categories.py](src/lifeos/categories.py) 是内置类别、schema 和饮食合计；[summary.py](src/lifeos/summary.py) 生成每日汇总；[importers/](src/lifeos/importers/) 是苹果健康和 Health Auto Export 的导入；[intake.py](src/lifeos/intake.py) 识别导出文件并存档，[receive.py](src/lifeos/receive.py) 驱动 LocalSend 接收；[db.py](src/lifeos/db.py) 是表结构。
+[app.py](src/lifeos/app.py) 是 HTTP 层，[mcp.py](src/lifeos/mcp.py) 是 MCP 服务，[oauth.py](src/lifeos/oauth.py) 是给 MCP 客户端用的 OAuth；[records.py](src/lifeos/records.py)、[samples.py](src/lifeos/samples.py)、[foods.py](src/lifeos/foods.py) 和 [profile.py](src/lifeos/profile.py) 是各类数据；[categories.py](src/lifeos/categories.py) 是内置类别、schema 和饮食合计；[summary.py](src/lifeos/summary.py) 生成每日汇总；[importers/](src/lifeos/importers/) 是苹果健康和 Health Auto Export 的导入；[intake.py](src/lifeos/intake.py) 识别导出文件并存档，[receive.py](src/lifeos/receive.py) 驱动 LocalSend 接收；[db.py](src/lifeos/db.py) 是表结构。
 
 ## 许可证
 

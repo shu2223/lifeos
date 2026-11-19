@@ -25,7 +25,7 @@ from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import __version__, auth, foods, jobs, profile, records, samples, series, summary
+from . import __version__, auth, foods, jobs, mcp, oauth, profile, records, samples, series, summary
 from . import categories as cats
 from . import metrics as mx
 from .config import Settings, from_env
@@ -313,18 +313,60 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(api, prefix=WEB + API, include_in_schema=False)
         app.add_api_route(API + "/openapi.json", lambda: app.openapi(), include_in_schema=False)
 
+    # MCP (mcp.py) and OAuth for MCP clients (oauth.py). The endpoints clients call without a
+    # browser sit under {prefix}/api/v1 with the rest of the agent API; the consent page sits
+    # outside it, so Cloudflare Access signs the owner in before it opens.
+    oauth_api = oauth.router()
+    for base in dict.fromkeys((p, "")):
+        app.include_router(oauth_api, prefix=base + API)
+        app.add_api_route(base + API + "/mcp", _mcp_endpoint, methods=["GET", "POST", "DELETE"],
+                          include_in_schema=False)
+        app.add_api_route(base + "/oauth/authorize", oauth.authorize_page, methods=["GET"],
+                          include_in_schema=False)
+        app.add_api_route(base + "/oauth/authorize", oauth.authorize_submit, methods=["POST"],
+                          include_in_schema=False)
+    # RFC 9728 / RFC 8414 discovery at the site root, for clients that look only there. On
+    # yishuapp.com these need their own tunnel route and Access bypass (see README).
+    for kind in WELL_KNOWN:
+        app.add_api_route(f"/.well-known/{kind}/{{rest:path}}", _root_well_known(kind),
+                          methods=["GET"], include_in_schema=False)
+
     @app.middleware("http")
     async def access_guard(request: Request, call_next):
         # A safety net in case the Cloudflare Access app is ever removed or misconfigured:
         # on the public host only the agent API may be reached without signing in.
         if _public(request) and not request.headers.get(ACCESS_HEADER):
             path = request.url.path
-            if not (path == p + API or path.startswith(p + API + "/")):
+            if not (path == p + API or path.startswith(p + API + "/")
+                    or path.startswith(WELL_KNOWN_PREFIXES)):
                 return JSONResponse({"error": {
                     "code": "forbidden", "message": "sign in through Cloudflare Access",
                     "hint": f"agents use {p}{API} with a token"}}, status_code=403)
         return await call_next(request)
     return app
+
+
+WELL_KNOWN = ("oauth-protected-resource", "oauth-authorization-server", "openid-configuration")
+WELL_KNOWN_PREFIXES = tuple(f"/.well-known/{k}/" for k in WELL_KNOWN)
+
+
+async def _mcp_endpoint(request: Request):
+    return await mcp.endpoint(request, oauth.site_of(request) + API)
+
+
+def _root_well_known(kind: str):
+    """/.well-known/<kind>/life/api/v1[/mcp] -> the metadata for that path, if it is ours."""
+    resource = kind == "oauth-protected-resource"
+
+    def view(rest: str, request: Request):
+        target = "/" + rest.strip("/")
+        for root in dict.fromkeys((request.app.state.settings.prefix, "")):
+            if target == root + API + ("/mcp" if resource else ""):
+                site = str(request.base_url).rstrip("/") + root
+                return JSONResponse(oauth.resource_metadata(site) if resource
+                                    else oauth.server_metadata(site))
+        raise not_found("metadata", target)
+    return view
 
 
 def _base(request: Request) -> str:
@@ -375,6 +417,7 @@ def public_router() -> APIRouter:
                      "machine.",
             "api_root": f"{b}{API}", "manual": f"{b}{API}/manual",
             "openapi": f"{b}{API}/openapi.json",
+            "mcp": f"{b}{API}/mcp",
             "auth": "Authorization: Bearer <token> on every /api/v1 call except this one",
             "start_here": f"GET {b}{API}/context",
         }
